@@ -1,111 +1,32 @@
 #!/bin/sh
-# Copyright (C) 2023 Siriling <siriling@qq.com>
 
-#脚本目录
-SCRIPT_DIR="/usr/share/modem"
-source /usr/share/libubox/jshn.sh
-#预设
-quectel_presets()
-{
-	at_command='ATI'
-	# sh "${SCRIPT_DIR}/modem_at.sh" "$at_port" "$at_command"
-}
+source /usr/share/modem/generic.sh
 
-#获取DNS
-# $1:AT串口
-# $2:连接定义
-quectel_get_dns()
-{
-    local at_port="$1"
-    local define_connect="$2"
-
-    [ -z "$define_connect" ] && {
-        define_connect="1"
-    }
-
-    local public_dns1_ipv4="223.5.5.5"
-    local public_dns2_ipv4="119.29.29.29"
-    local public_dns1_ipv6="2400:3200::1" #下一代互联网北京研究中心：240C::6666，阿里：2400:3200::1，腾讯：2402:4e00::
-    local public_dns2_ipv6="2402:4e00::"
-
-    #获取DNS地址
-    at_command="AT+GTDNS=${define_connect}"
-    local response=$(at ${at_port} ${at_command} | grep "+GTDNS: ")
-
-    local ipv4_dns1=$(echo "${response}" | awk -F'"' '{print $2}' | awk -F',' '{print $1}')
-    [ -z "$ipv4_dns1" ] && {
-        ipv4_dns1="${public_dns1_ipv4}"
-    }
-
-    local ipv4_dns2=$(echo "${response}" | awk -F'"' '{print $4}' | awk -F',' '{print $1}')
-    [ -z "$ipv4_dns2" ] && {
-        ipv4_dns2="${public_dns2_ipv4}"
-    }
-
-    local ipv6_dns1=$(echo "${response}" | awk -F'"' '{print $2}' | awk -F',' '{print $2}')
-    [ -z "$ipv6_dns1" ] && {
-        ipv6_dns1="${public_dns1_ipv6}"
-    }
-
-    local ipv6_dns2=$(echo "${response}" | awk -F'"' '{print $4}' | awk -F',' '{print $2}')
-    [ -z "$ipv6_dns2" ] && {
-        ipv6_dns2="${public_dns2_ipv6}"
-    }
-
-    dns="{
-        \"dns\":{
-            \"ipv4_dns1\":\"$ipv4_dns1\",
-            \"ipv4_dns2\":\"$ipv4_dns2\",
-            \"ipv6_dns1\":\"$ipv6_dns1\",
-            \"ipv6_dns2\":\"$ipv6_dns2\"
-	    }
-    }"
-
-    echo "$dns"
-}
-
-quectel_get_imei(){
-    local at_port="$1"
+#return raw data
+get_imei(){
     at_command="AT+CGSN"
-    imei=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $at_command | sed -n '2p' | grep -E '[0-9]+' )
-    echo "$imei"
+    imei=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $at_command | grep -o "[0-9]\{15\}")
+    json_add_string "imei" "$imei"
 }
 
-quectel_set_imei(){
-    local at_port="$1"
-    local imei="$2"
+#return raw data
+set_imei(){
+    local imei="$1"
     at_command="AT+EGMR=1,7,\"$imei\""
     res=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $at_command)
+    json_select "result"
+    json_add_string "set_imei" "$res"
+    json_close_object
+    get_imei
 }
 
 #获取拨号模式
 # $1:AT串口
 # $2:平台
-quectel_get_mode()
+get_mode()
 {
-    local at_port="$1"
-    local platform="$2"
-    modem_number=$(uci -q get modem.@global[0].modem_number)
     at_command='AT+QCFG="usbnet"'
     local mode_num=$(sh ${SCRIPT_DIR}/modem_at.sh ${at_port} ${at_command} | grep "+QCFG:" | sed 's/+QCFG: "usbnet",//g' | sed 's/\r//g')
-
-    if [ -z "$mode_num" ]; then
-        echo "unknown"
-        return
-    fi
-
-    #获取芯片平台
-	if [ -z "$platform" ]; then
-		local modem_number=$(uci -q get modem.@global[0].modem_number)
-        for i in $(seq 0 $((modem_number-1))); do
-            local at_port_tmp=$(uci -q get modem.modem${i}.at_port)
-            if [ "$at_port" = "$at_port_tmp" ]; then
-                platform=$(uci -q get modem.modem${i}.platform)
-                break
-            fi
-        done
-	fi
-    
     local mode
     case "$platform" in
         "qualcomm")
@@ -143,32 +64,26 @@ quectel_get_mode()
             mode="${mode_num}"
         ;;
     esac
-    echo "${mode}"
+    available_modes=$(uci -q get modem.$config_section.modes)
+    json_add_object "mode"
+    for available_mode in $available_modes; do
+        if [ "$mode" = "$available_mode" ]; then
+            json_add_string "$available_mode" "1"
+        else
+            json_add_string "$available_mode" "0"
+        fi
+    done
+    json_close_object
 }
 
 #设置拨号模式
-# $1:AT串口
-# $2:拨号模式配置
-quectel_set_mode()
+set_mode()
 {
-    local at_port="$1"
-
-    #获取芯片平台
-    local platform
-    local modem_number=$(uci -q get modem.@global[0].modem_number)
-    for i in $(seq 0 $((modem_number-1))); do
-        local at_port_tmp=$(uci -q get modem.modem$i.at_port)
-        if [ "$at_port" = "$at_port_tmp" ]; then
-            platform=$(uci -q get modem.modem$i.platform)
-            break
-        fi
-    done
-
     #获取拨号模式配置
-    local mode_num
+    local mode=$1
     case "$platform" in
         "qualcomm")
-            case "$2" in
+            case "$mode" in
                 "qmi") mode_num="0" ;;
                 # "gobinet")  mode_num="0" ;;
                 "ecm") mode_num="1" ;;
@@ -179,7 +94,7 @@ quectel_set_mode()
             esac
         ;;
         "unisoc")
-            case "$2" in
+            case "$mode" in
                 "ecm") mode_num="1" ;;
                 "mbim") mode_num="2" ;;
                 "rndis") mode_num="3" ;;
@@ -188,7 +103,7 @@ quectel_set_mode()
             esac
         ;;
         "lte")
-            case "$2" in
+            case "$mode" in
                 "qmi") mode_num="0" ;;
                 # "gobinet")  mode_num="0" ;;
                 "ecm") mode_num="1" ;;
@@ -206,73 +121,61 @@ quectel_set_mode()
 
     #设置模组
     at_command='AT+QCFG="usbnet",'${mode_num}
-    sh ${SCRIPT_DIR}/modem_at.sh "${at_port}" "${at_command}"
+    res=$(sh ${SCRIPT_DIR}/modem_at.sh "${at_port}" "${at_command}")
+    json_select "result"
+    json_add_string "set_mode" "$res"
+    json_close_object
 }
 
 #获取网络偏好
 # $1:AT串口
-quectel_get_network_prefer()
+get_network_prefer()
 {
-    local at_port="$1"
-    local platform
-    local modem_number=$(uci -q get modem.@global[0].modem_number)
-    for i in $(seq 0 $((modem_number-1))); do
-        local at_port_tmp=$(uci -q get modem.modem$i.at_port)
-        if [ "$at_port" = "$at_port_tmp" ]; then
-            platform=$(uci -q get modem.modem$i.platform)
-            break
-        fi
-    done
-    logger -t modem "quectel_get_network_prefer $platform"
+    logger -t modem "get_network_prefer $platform"
     case "$platform" in
         "qualcomm")
-            quectel_get_network_prefer_nr $at_port
+            get_network_prefer_nr
         ;;
         "unisoc")
-            quectel_get_network_prefer_nr $at_port
+            get_network_prefer_nr
         ;;
         "lte")
-            quectel_get_network_prefer_lte $at_port
+            get_network_prefer_lte
         ;;
         *)
-            quectel_get_network_prefer_nr $at_port
+            get_network_prefer_nr
         ;;
     esac
+    json_add_object network_prefer
+    json_add_string 3G $network_prefer_3g
+    json_add_string 4G $network_prefer_4g
+    json_add_string 5G $network_prefer_5g
+    json_close_array
     
 }
 
-quectel_get_network_prefer_lte()
+get_network_prefer_lte()
 {
-    local at_port="$1"
     at_command='AT+QCFG="nwscanmode"'
-    logger -t modem "quectel_get_network_prefer_lte"
-    local response=$(sh ${SCRIPT_DIR}/modem_at.sh ${at_port} ${at_command} | grep "+QCFG:" | awk -F'",' '{print $2}' | sed 's/\r//g' |grep -o "[0-9]")
-    local network_prefer_3g="0";
-    local network_prefer_4g="0";
+    logger -t modem "get_network_prefer_lte"
+    response=$(sh ${SCRIPT_DIR}/modem_at.sh ${at_port} ${at_command} | grep "+QCFG:" | awk -F'",' '{print $2}' | sed 's/\r//g' |grep -o "[0-9]")
+    network_prefer_3g="0";
+    network_prefer_4g="0";
     case "$response" in
         "0") network_prefer_3g="1"; network_prefer_4g="1" ;;
         "3") network_prefer_4g="1" ;;
     esac
-    local network_prefer="{
-        \"network_prefer\":{
-            \"3G\":$network_prefer_3g,
-            \"4G\":$network_prefer_4g,
-            \"5G\":0
-        }
-    }"
-    echo "$network_prefer"
 }
 
-quectel_get_network_prefer_nr()
+get_network_prefer_nr()
 {
-    logger -t modem "quectel_get_network_prefer_nr"
-    local at_port="$1"
+    logger -t modem "get_network_prefer_nr"
     at_command='AT+QNWPREFCFG="mode_pref"'
     local response=$(sh ${SCRIPT_DIR}/modem_at.sh ${at_port} ${at_command} | grep "+QNWPREFCFG:" | awk -F',' '{print $2}' | sed 's/\r//g')
     
-    local network_prefer_3g="0";
-    local network_prefer_4g="0";
-    local network_prefer_5g="0";
+    network_prefer_3g="0";
+    network_prefer_4g="0";
+    network_prefer_5g="0";
 
     #匹配不同的网络类型
     local auto=$(echo "${response}" | grep "AUTO")
@@ -294,75 +197,42 @@ quectel_get_network_prefer_nr()
             network_prefer_5g="1"
         fi
     fi
-
-    local network_prefer="{
-        \"network_prefer\":{
-            \"3G\":$network_prefer_3g,
-            \"4G\":$network_prefer_4g,
-            \"5G\":$network_prefer_5g
-        }
-    }"
-    echo "$network_prefer"
 }
-
-
-
-
-
 
 #设置网络偏好
 # $1:AT串口
 # $2:网络偏好配置
-quectel_set_network_prefer()
+set_network_prefer()
 {
-    local at_port="$1"
-    local network_prefer="$2"
-    local platform
-    local modem_number=$(uci -q get modem.@global[0].modem_number)
-    for i in $(seq 0 $((modem_number-1))); do
-        local at_port_tmp=$(uci -q get modem.modem$i.at_port)
-        if [ "$at_port" = "$at_port_tmp" ]; then
-            platform=$(uci -q get modem.modem$i.platform)
-            break
-        fi
-    done
-    logger -t modem "quectel_set_network_prefer $platform $network_prefer"
+    network_prefer_3g=$(echo $1 |jq -r 'contains(["3G"])')
+    network_prefer_4g=$(echo $1 |jq -r 'contains(["4G"])')
+    network_prefer_5g=$(echo $1 |jq -r 'contains(["5G"])')
+    length=$(echo $1 |jq -r 'length')
+    logger -t modem "set_network_prefer $platform $network_prefer"
+
     case "$platform" in
         "qualcomm")
-            quectel_set_network_prefer_nr $at_port $network_prefer
+            set_network_prefer_nr $at_port $network_prefer
         ;;
         "unisoc")
-            quectel_set_network_prefer_nr $at_port $network_prefer
+            set_network_prefer_nr $at_port $network_prefer
         ;;
         "lte")
-            quectel_set_network_prefer_lte $at_port $network_prefer
+            set_network_prefer_lte $at_port $network_prefer
         ;;
         *)
-            quectel_set_network_prefer_nr $at_port $network_prefer
+            set_network_prefer_nr $at_port $network_prefer
         ;;
     esac
 }
 
-quectel_set_network_prefer_lte()
+set_network_prefer_lte()
 {
-    local at_port="$1"
-    local network_prefer="$2"
-
-    #获取网络偏好配置
-    local network_prefer_config
-
-    #获取选中的数量
-    local count=$(echo "$network_prefer" | grep -o "1" | wc -l)
-    #获取每个偏好的值
-    local network_prefer_3g=$(echo "$network_prefer" | jq -r '.["3G"]')
-    local network_prefer_4g=$(echo "$network_prefer" | jq -r '.["4G"]')
-    local network_prefer_5g=$(echo "$network_prefer" | jq -r '.["5G"]')
-
-    case "$count" in
+    case "$length" in
         "1")
-            if [ "$network_prefer_3g" = "1" ]; then
+            if [ "$network_prefer_3g" = "true" ]; then
                 network_prefer_config="0"
-            elif [ "$network_prefer_4g" = "1" ]; then
+            elif [ "$network_prefer_4g" = "true" ]; then
                 network_prefer_config="3"
             fi
         ;;
@@ -376,37 +246,24 @@ quectel_set_network_prefer_lte()
 
 }
 
-quectel_set_network_prefer_nr()
+set_network_prefer_nr()
 {
-    local at_port="$1"
-    local network_prefer="$2"
-
-    #获取网络偏好配置
-    local network_prefer_config
-
-    #获取选中的数量
-    local count=$(echo "$network_prefer" | grep -o "1" | wc -l)
-    #获取每个偏好的值
-    local network_prefer_3g=$(echo "$network_prefer" | jq -r '.["3G"]')
-    local network_prefer_4g=$(echo "$network_prefer" | jq -r '.["4G"]')
-    local network_prefer_5g=$(echo "$network_prefer" | jq -r '.["5G"]')
-
-    case "$count" in
+    case "$length" in
         "1")
-            if [ "$network_prefer_3g" = "1" ]; then
+            if [ "$network_prefer_3g" = "true" ]; then
                 network_prefer_config="WCDMA"
-            elif [ "$network_prefer_4g" = "1" ]; then
+            elif [ "$network_prefer_4g" = "true" ]; then
                 network_prefer_config="LTE"
-            elif [ "$network_prefer_5g" = "1" ]; then
+            elif [ "$network_prefer_5g" = "true" ]; then
                 network_prefer_config="NR5G"
             fi
         ;;
         "2")
-            if [ "$network_prefer_3g" = "1" ] && [ "$network_prefer_4g" = "1" ]; then
+            if [ "$network_prefer_3g" = "true" ] && [ "$network_prefer_4g" = "true" ]; then
                 network_prefer_config="WCDMA:LTE"
-            elif [ "$network_prefer_3g" = "1" ] && [ "$network_prefer_5g" = "1" ]; then
+            elif [ "$network_prefer_3g" = "true" ] && [ "$network_prefer_5g" = "true" ]; then
                 network_prefer_config="WCDMA:NR5G"
-            elif [ "$network_prefer_4g" = "1" ] && [ "$network_prefer_5g" = "1" ]; then
+            elif [ "$network_prefer_4g" = "true" ] && [ "$network_prefer_5g" = "true" ]; then
                 network_prefer_config="LTE:NR5G"
             fi
         ;;
@@ -421,101 +278,53 @@ quectel_set_network_prefer_nr()
 
 #获取电压
 # $1:AT串口
-quectel_get_voltage()
+get_voltage()
 {
-    local at_port="$1"
-    
-    #Voltage（电压）
     at_command="AT+CBC"
 	local voltage=$(sh ${SCRIPT_DIR}/modem_at.sh ${at_port} ${at_command} | grep "+CBC:" | awk -F',' '{print $3}' | sed 's/\r//g')
-    echo "${voltage}"
+    [ -n "$voltage" ] && {
+        add_plain_info_entry "voltage" "$voltage mV" "Voltage" 
+    }
 }
 
 #获取温度
-# $1:AT串口
-quectel_get_temperature()
-{
-    local at_port="$1"
-    
+#return raw data
+get_temperature()
+{   
     #Temperature（温度）
     at_command="AT+QTEMP"
-
+    local temp
     local line=1
-    retry=0
-    while [ $retry -lt 5 ]; do
-        response=$(sh ${SCRIPT_DIR}/modem_at.sh ${at_port} ${at_command} | grep "+QTEMP:" | sed -n "${line}p" | awk -F'"' '{print $4}')
-        [ $response -gt 0 ] && break
-        line=$((line+1))
-        retry=$((retry+1))
+    QTEMP=$(sh ${SCRIPT_DIR}/modem_at.sh ${at_port} ${at_command} | grep "+QTEMP:")
+    for line in $( echo -e "$QTEMP" ); do
+        temp=$(echo $line | grep -o "[0-9]\{1,3\}")
+        if [ -n "$temp" ]; then
+            break
+        fi
     done
-
-    local temperature
-	if [ -n "$response" ]; then
-		temperature="${response}$(printf "\xc2\xb0")C"
+	if [ -n "$temp" ]; then
+		temp="${temp}$(printf "\xc2\xb0")C"
 	fi
-
-    # response=$(sh ${SCRIPT_DIR}/modem_at.sh ${at_port} ${at_command} | grep "+QTEMP:")
-    # QTEMP=$(echo $response | grep -o -i "+QTEMP: [0-9]\{1,3\}")
-    # if [ -z "$QTEMP" ]; then
-    #     QTEMP=$(echo $response | grep -o -i "+QTEMP:[ ]\?\"XO[_-]THERM[_-][^,]\+,[\"]\?[0-9]\{1,3\}" | grep -o "[0-9]\{1,3\}")
-    # fi
-    # if [ -z "$QTEMP" ]; then
-    #     QTEMP=$(echo $response | grep -o -i "+QTEMP:[ ]\?\"MDM-CORE-USR.\+[0-9]\{1,3\}\"" | cut -d\" -f4)
-    # fi
-    # if [ -z "$QTEMP" ]; then
-    #     QTEMP=$(echo $response | grep -o -i "+QTEMP:[ ]\?\"MDMSS.\+[0-9]\{1,3\}\"" | cut -d\" -f4)
-    # fi
-    # if [ -n "$QTEMP" ]; then
-    #     CTEMP=$(echo $QTEMP | grep -o -i "[0-9]\{1,3\}")$(printf "\xc2\xb0")"C"
-    # fi
-
-    echo "${temperature}"
+    add_plain_info_entry "temperature" "$temp" "Temperature"
 }
 
 #获取连接状态
-# $1:AT串口
-# $2:连接定义
-quectel_get_connect_status()
+#return raw data
+get_connect_status()
 {
-    local at_port="$1"
-    local define_connect="$2"
-
-    #默认值为1
-    [ -z "$define_connect" ] && {
-        define_connect="1"
-    }
-
     at_command="AT+CGPADDR=${define_connect}"
     local ipv4=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $at_command | grep "+CGPADDR: " | awk -F'"' '{print $2}')
     local not_ip="0.0.0.0"
-
-    #设置连接状态
-    local connect_status
     if [ -z "$ipv4" ] || [[ "$ipv4" = *"$not_ip"* ]]; then
         connect_status="disconnect"
     else
         connect_status="connect"
     fi
-    
-    #方法二
-    # at_command="AT+QNWINFO"
-
-	# local response=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $at_command | grep "+QNWINFO:")
-
-    # local connect_status
-	# if [[ "$response" = *"No Service"* ]]; then
-    #     connect_status="disconnect"
-    # elif [[ "$response" = *"Unknown Service"* ]]; then
-    #     connect_status="disconnect"
-    # else
-    #     connect_status="connect"
-    # fi
-
-    echo "$connect_status"
+    add_plain_info_entry "connect_status" "$connect_status" "Connect Status"
 }
 
 #基本信息
-quectel_base_info()
+base_info()
 {
     debug "Quectel base info"
 
@@ -530,44 +339,18 @@ quectel_base_info()
     revision=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $at_command | grep "Revision:" | sed 's/Revision: //g' | sed 's/\r//g')
     # at_command="AT+CGMR"
     # revision=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $at_command | sed -n '2p' | sed 's/\r//g')
-
-    #Mode（拨号模式）
-    mode=$(quectel_get_mode ${at_port} ${platform} | tr 'a-z' 'A-Z')
-
-    #Temperature（温度）
-    temperature=$(quectel_get_temperature ${at_port})
+    class="Base Information"
+    add_plain_info_entry "manufacturer" "$manufacturer" "Manufacturer"
+    add_plain_info_entry "revision" "$revision" "Revision"
+    add_plain_info_entry "at_port" "$at_port" "AT Port"
+    get_temperature
+    get_voltage
+    get_connect_status
 }
 
-#获取SIM卡状态
-# $1:SIM卡状态标志
-quectel_get_sim_status()
-{
-    local sim_status
-    case $1 in
-        "") sim_status="miss" ;;
-        *"READY"*) sim_status="ready" ;;
-        *"SIM PIN"*) sim_status="MT is waiting SIM PIN to be given" ;;
-        *"SIM PUK"*) sim_status="MT is waiting SIM PUK to be given" ;;
-        *"PH-FSIM PIN"*) sim_status="MT is waiting phone-to-SIM card password to be given" ;;
-        *"PH-FSIM PIN"*) sim_status="MT is waiting phone-to-very first SIM card password to be given" ;;
-        *"PH-FSIM PUK"*) sim_status="MT is waiting phone-to-very first SIM card unblocking password to be given" ;;
-        *"SIM PIN2"*) sim_status="MT is waiting SIM PIN2 to be given" ;;
-        *"SIM PUK2"*) sim_status="MT is waiting SIM PUK2 to be given" ;;
-        *"PH-NET PIN"*) sim_status="MT is waiting network personalization password to be given" ;;
-        *"PH-NET PUK"*) sim_status="MT is waiting network personalization unblocking password to be given" ;;
-        *"PH-NETSUB PIN"*) sim_status="MT is waiting network subset personalization password to be given" ;;
-        *"PH-NETSUB PUK"*) sim_status="MT is waiting network subset personalization unblocking password to be given" ;;
-        *"PH-SP PIN"*) sim_status="MT is waiting service provider personalization password to be given" ;;
-        *"PH-SP PUK"*) sim_status="MT is waiting service provider personalization unblocking password to be given" ;;
-        *"PH-CORP PIN"*) sim_status="MT is waiting corporate personalization password to be given" ;;
-        *"PH-CORP PUK"*) sim_status="MT is waiting corporate personalization unblocking password to be given" ;;
-        *) sim_status="unknown" ;;
-    esac
-    echo "$sim_status"
-}
 
 #SIM卡信息
-quectel_sim_info()
+sim_info()
 {
     debug "Quectel sim info"
     
@@ -582,7 +365,7 @@ quectel_sim_info()
     #SIM Status（SIM状态）
     at_command="AT+CPIN?"
 	sim_status_flag=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $at_command | sed -n '2p')
-    sim_status=$(quectel_get_sim_status "$sim_status_flag")
+    sim_status=$(get_sim_status "$sim_status_flag")
 
     if [ "$sim_status" != "ready" ]; then
         return
@@ -611,45 +394,41 @@ quectel_sim_info()
 
     #ICCID（集成电路卡识别码）
     at_command="AT+ICCID"
-	# iccid=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $at_command | grep -o "+ICCID:[ ]*[-0-9]\+" | grep -o "[-0-9]\{1,4\}")
-}
-
-#获取网络类型
-# $1:网络类型数字
-quectel_get_rat()
-{
-    local rat
-    case $1 in
-		"0"|"1"|"3"|"8") rat="GSM" ;;
-		"2"|"4"|"5"|"6"|"9"|"10") rat="WCDMA" ;;
-        "7") rat="LTE" ;;
-        "11"|"12") rat="NR" ;;
-	esac
-    echo "${rat}"
-}
-
-#获取信号强度指示
-# $1:信号强度指示数字
-quectel_get_rssi()
-{
-    local rssi
-    case $1 in
-		"99") rssi="unknown" ;;
-		* )  rssi=$((2 * $1 - 113)) ;;
-	esac
-    echo "$rssi"
+	iccid=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $at_command | grep -o "+ICCID:[ ]*[-0-9]\+" | grep -o "[-0-9]\{1,4\}")
+    class="SIM Information"
+    case "$sim_status" in
+        "ready")
+            add_plain_info_entry "SIM Status" "$sim_status" "SIM Status" 
+            add_plain_info_entry "ISP" "$isp" "Internet Service Provider"
+            add_plain_info_entry "SIM Slot" "$sim_slot" "SIM Slot"
+            add_plain_info_entry "SIM Number" "$sim_number" "SIM Number"
+            add_plain_info_entry "IMEI" "$imei" "International Mobile Equipment Identity" 
+            add_plain_info_entry "IMSI" "$imsi" "International Mobile Subscriber Identity" 
+            add_plain_info_entry "ICCID" "$iccid" "Integrate Circuit Card Identity" 
+        ;;
+        "miss")
+            add_plain_info_entry "SIM Status" "$sim_status" "SIM Status" 
+            add_plain_info_entry "IMEI" "$imei" "International Mobile Equipment Identity" 
+        ;;
+        "unknown")
+            add_plain_info_entry "SIM Status" "$sim_status" "SIM Status" 
+        ;;
+        *)
+            add_plain_info_entry "SIM Status" "$sim_status" "SIM Status" 
+            add_plain_info_entry "SIM Slot" "$sim_slot" "SIM Slot" 
+            add_plain_info_entry "IMEI" "$imei" "International Mobile Equipment Identity" 
+            add_plain_info_entry "IMSI" "$imsi" "International Mobile Subscriber Identity" 
+            add_plain_info_entry "ICCID" "$iccid" "Integrate Circuit Card Identity" 
+        ;;
+    esac
 }
 
 #网络信息
-quectel_network_info()
+network_info()
 {
     debug "Quectel network info"
 
     #Connect Status（连接状态）
-    connect_status=$(quectel_get_connect_status ${at_port} ${define_connect})
-    if [ "$connect_status" != "connect" ]; then
-        return
-    fi
 
     #Network Type（网络类型）
     at_command="AT+QNWINFO"
@@ -658,7 +437,7 @@ quectel_network_info()
     [ -z "$network_type" ] && {
         at_command='AT+COPS?'
         local rat_num=$(sh ${SCRIPT_DIR}/modem_at.sh ${at_port} ${at_command} | grep "+COPS:" | awk -F',' '{print $4}' | sed 's/\r//g')
-        network_type=$(quectel_get_rat ${rat_num})
+        network_type=$(get_rat ${rat_num})
     }
 
     #CSQ（信号强度）
@@ -667,7 +446,7 @@ quectel_network_info()
 
     #RSSI（信号强度指示）
     # rssi_num=$(echo $response | awk -F',' '{print $1}')
-    # rssi=$(quectel_get_rssi $rssi_num)
+    # rssi=$(get_rssi $rssi_num)
     #Ber（信道误码率）
     # ber=$(echo $response | awk -F',' '{print $2}')
 
@@ -703,12 +482,20 @@ quectel_network_info()
 
     #当前下载速率（单位，Byte/s）
     rx_rate=$(echo $response | awk -F',' '{print $2}')
+    class="Network Information"
+    add_plain_info_entry "Network Type" "$network_type" "Network Type"
+    add_plain_info_entry "CQI UL" "$cqi_ul" "Channel Quality Indicator for Uplink"
+    add_plain_info_entry "CQI DL" "$cqi_dl" "Channel Quality Indicator for Downlink"
+    add_plain_info_entry "AMBR UL" "$ambr_ul" "Access Maximum Bit Rate for Uplink"
+    add_plain_info_entry "AMBR DL" "$ambr_dl" "Access Maximum Bit Rate for Downlink"
+    add_plain_info_entry "Tx Rate" "$tx_rate" "Transmit Rate"
+    add_plain_info_entry "Rx Rate" "$rx_rate" "Receive Rate"
 }
 
 #获取频段
 # $1:网络类型
 # $2:频段数字
-quectel_get_band()
+get_band()
 {
     local band
     case $1 in
@@ -719,7 +506,7 @@ quectel_get_band()
     echo "$band"
 }
 
-quectel_get_lockband_nr()
+get_lockband_nr()
 {
     local at_port="$1"
     debug "Quectel sdx55 get lockband info"
@@ -735,56 +522,55 @@ quectel_get_lockband_nr()
     lte_band=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $get_lte_config_command|grep -e "+QNWPREFCFG: ")
     nsa_nr_band=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $get_nsa_nr_config_command|grep -e "+QNWPREFCFG: ")
     sa_nr_band=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port  $get_sa_nr_config_command|grep -e "+QNWPREFCFG: ")
-    json_init
     json_add_object "UMTS"
-    json_add_object "available_band"
-    json_close_object
+    json_add_array "available_band"
+    json_close_array
     json_add_array "lock_band"
     json_close_object
     json_close_object
     json_add_object "LTE"
-    json_add_object "available_band"
-    json_close_object
+    json_add_array "available_band"
+    json_close_array
     json_add_array "lock_band"
-    json_close_object
+    json_close_array
     json_close_object
     json_add_object "NR"
-    json_add_object "available_band"
-    json_close_object
+    json_add_array "available_band"
+    json_close_array
     json_add_array "lock_band"
-    json_close_object
+    json_close_array
     json_close_object
     json_add_object "NR_NSA"
-    json_add_object "available_band"
-    json_close_object
+    json_add_array "available_band"
+    json_close_array
     json_add_array "lock_band"
-    json_close_object
+    json_close_array
     json_close_object
     for i in $(echo "$wcdma_avalible_band" | awk -F"," '{for(j=1; j<=NF; j++) print $j}'); do
         json_select "UMTS"
         json_select "available_band"
-        json_add_string  "$i" "UMTS_$i"
+        add_avalible_band_entry  "$i" "UMTS_$i"
         json_select ..
         json_select ..
     done
     for i in $(echo "$lte_avalible_band" | awk -F"," '{for(j=1; j<=NF; j++) print $j}'); do
         json_select "LTE"
         json_select "available_band"
-        json_add_string  "$i" "LTE_B$i"
+        add_avalible_band_entry  "$i" "LTE_B$i"
         json_select ..
         json_select ..
     done
     for i in $(echo "$nsa_nr_avalible_band" | awk -F"," '{for(j=1; j<=NF; j++) print $j}'); do
         json_select "NR_NSA"
         json_select "available_band"
-        json_add_string  "$i" "NSA_NR_N$i"
+        add_avalible_band_entry  "$i" "NSA_NR_N$i"
         json_select ..
         json_select ..
     done
     for i in $(echo "$sa_nr_avalible_band" | awk -F"," '{for(j=1; j<=NF; j++) print $j}'); do
         json_select "NR"
         json_select "available_band"
-        json_add_string  "$i" "SA_NR_N$i"
+        add_avalible_band_entry  "$i" "SA_NR_N$i"
         json_select ..
         json_select ..
     done
@@ -826,8 +612,6 @@ quectel_get_lockband_nr()
         fi
     done
     json_close_array
-    json_result=`json_dump`
-    echo "$json_result"
 }
 
 convert2band()
@@ -835,7 +619,7 @@ convert2band()
     hex_band=$1
     hex=$(echo $hex_band | grep -o "[0-9A-F]\{1,16\}")
     if [ -z "$hex" ]; then
-        echo Invalid band
+        retrun
     fi
     band_list=""
     bin=$(echo "ibase=16;obase=2;$hex" | bc)
@@ -865,7 +649,7 @@ convert2hex()
     fi
 }
 
-quectel_get_lockband_lte()
+get_lockband_lte()
 {
     local at_port="$1"
     local commamd="AT+QCFG=\"band\""
@@ -874,21 +658,20 @@ quectel_get_lockband_lte()
         LOCK_BAND="Unknown"
     fi
     LOCK_BAND=$(convert2band $LTE_LOCK)
-    json_init
     json_add_object "Lte"
-    json_add_object available_band
-    json_add_string "1" "B01" 
-    json_add_string "3" "B03"
-    json_add_string "5" "B05" 
-    json_add_string "7" "B07"
-    json_add_string "8" "B08"
-    json_add_string "20" "B20"
-    json_add_string "34" "B34"
-    json_add_string "38" "B38"
-    json_add_string "39" "B39"
-    json_add_string "40" "B40"
-    json_add_string "41" "B41"
-    json_close_object
+    json_add_array available_band
+    add_avalible_band_entry "1" "B01" 
+    add_avalible_band_entry "3" "B03"
+    add_avalible_band_entry "5" "B05" 
+    json_adadd_avalible_band_entryd_string "7" "B07"
+    add_avalible_band_entry "8" "B08"
+    add_avalible_band_entry "20" "B20"
+    add_avalible_band_entry "34" "B34"
+    add_avalible_band_entry "38" "B38"
+    add_avalible_band_entry "39" "B39"
+    json_addadd_avalible_band_entry_string "40" "B40"
+    add_avalible_band_entry "41" "B41"
+    json_close_array
     json_add_array "lock_band"
     for band in $(echo $LOCK_BAND | tr ',' '\n' | sort -n | uniq); do
         json_add_string "" $band
@@ -896,55 +679,38 @@ quectel_get_lockband_lte()
     json_close_array
     json_close_object
     json_close_object
-    json_dump
 }
 
-quectel_get_lockband()
+get_lockband()
 {
-    local at_port="$1"
-    local platform
-    local modem_number=$(uci -q get modem.@global[0].modem_number)
-    for i in $(seq 0 $((modem_number-1))); do
-        local at_port_tmp=$(uci -q get modem.modem$i.at_port)
-        if [ "$at_port" = "$at_port_tmp" ]; then
-            platform=$(uci -q get modem.modem$i.platform)
-            break
-        fi
-    done
+    json_add_object "lockband"
     case "$platform" in
         "qualcomm")
-            quectel_get_lockband_nr $at_port
+            get_lockband_nr $at_port
         ;;
         "unisoc")
-            quectel_get_lockband_nr $at_port
+            get_lockband_nr $at_port
         ;;
         'lte')
-            quectel_get_lockband_lte $at_port
+            get_lockband_lte $at_port
         ;;
         *)
-            quectel_get_lockband_lte $at_port
+            get_lockband_lte $at_port
         ;;
     esac
+    json_close_object
 }
 
 
-quectel_set_lockband_lte()
+set_lockband_lte()
 {
-    at_port=$1
-    band=$2
-    if [ -z $band ]; then
-        echo "Invalid band"
-    fi
-    hex=$(convert2hex $band)
-    sh ${SCRIPT_DIR}/modem_at.sh  $at_port 'AT+QCFG="band",0,'${hex}',0'   2>&1 > /dev/null
+    hex=$(convert2hex $lock_band)
+    res=$(sh ${SCRIPT_DIR}/modem_at.sh  $at_port 'AT+QCFG="band",0,'${hex}',0'   2>&1 > /dev/null)
 }
 
-quectel_set_lockband_nr(){
-    local at_port="$1"
-    local lock_band="$2"
-    local rat="$3"
+set_lockband_nr(){
     lock_band=$(echo $lock_band | tr ',' ':')
-    case "$rat" in
+    case "$band_class" in
         "UMTS") 
             at_command="AT+QNWPREFCFG=\"gw_band\",$lock_band"
             res=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $at_command)
@@ -962,31 +728,33 @@ quectel_set_lockband_nr(){
             res=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $at_command)
             ;;
     esac
-    json_init
-    json_add_string result "$res"
-    json_result=`json_dump`
-    echo "$json_result"
 }
 
 #设置锁频
-quectel_set_lockband()
+set_lockband()
 {
     debug "quectel set lockband info"
-    local at_port="$1"
-    local rat="$3"
-    case "$rat" in
-        "Lte")
-            quectel_set_lockband_lte $at_port $2
+    config=$1
+    #{"band_class":"NR","lock_band":"41,78,79"}
+    band_class=$(echo $config | jq -r '.band_class')
+    lock_band=$(echo $config | jq -r '.lock_band')
+    case "$platform" in
+        "lte")
+            set_lockband_lte
         ;;
         *)
-            quectel_set_lockband_nr $at_port $2 $3
+            set_lockband_nr
         ;;
     esac
-    
+    json_select "result"
+    json_add_string "set_lockband" "$res"
+    json_add_string "config" "$config"
+    json_add_string "band_class" "$band_class"
+    json_add_string "lock_band" "$lock_band"
+    json_close_object
 }
 
-quectel_get_neighborcell_qualcomm(){
-    local at_port="$1"
+get_neighborcell_qualcomm(){
     local at_command='AT+QENG="neighbourcell"'
     nr_lock_check="AT+QNWLOCK=\"common\/5g\""
     lte_lock_check="AT+QNWLOCK=\"common\/4g\""
@@ -1012,8 +780,7 @@ quectel_get_neighborcell_qualcomm(){
     fi
 
 
-    sh ${SCRIPT_DIR}/modem_at.sh $at_port $at_command > /tmp/quectel_neighborcell
-    json_init
+    sh ${SCRIPT_DIR}/modem_at.sh $at_port $at_command > /tmp/neighborcell
     json_add_object "Feature"
     json_add_string "Unlock" "2"
     json_add_string "Lock PCI" "1"
@@ -1096,13 +863,10 @@ quectel_get_neighborcell_qualcomm(){
             json_close_object
             json_select ".."
         fi
-    done < /tmp/quectel_neighborcell
-    json_result=`json_dump`
-    echo "$json_result"
+    done < /tmp/neighborcell
 }
 
-quectel_get_neighborcell_lte(){
-    local at_port="$1"
+get_neighborcell_lte(){
     local at_command='AT+QENG="neighbourcell"'
     lte_lock_check="AT+QNWLOCK=\"common/lte\""
     lte_status=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $lte_lock_check | grep "+QNWLOCK:")
@@ -1122,13 +886,7 @@ quectel_get_neighborcell_lte(){
     else
         lte_lock_status=""
     fi
-    sh ${SCRIPT_DIR}/modem_at.sh $at_port $at_command > /tmp/quectel_neighborcell
-    json_init
-    json_add_object "Feature"
-    json_add_string "Unlock" "5"
-    json_add_string "Lock PCI" "6"
-    json_add_string "Lock ARFCN" "7"
-    json_close_object
+    sh ${SCRIPT_DIR}/modem_at.sh $at_port $at_command > /tmp/neighborcell
     json_add_array "NR"
     json_close_array
     json_add_array "LTE"
@@ -1179,85 +937,246 @@ quectel_get_neighborcell_lte(){
             json_close_object
             json_select ".."
         fi
-    done < /tmp/quectel_neighborcell
-    json_result=`json_dump`
-    echo "$json_result"
+    done < /tmp/neighborcell
 }
 
-quectel_get_neighborcell(){
-    debug "quectel set lockband info"
-    local at_port="$1"
-    local platform
-    local modem_number=$(uci -q get modem.@global[0].modem_number)
-    for i in $(seq 0 $((modem_number-1))); do
-        local at_port_tmp=$(uci -q get modem.modem$i.at_port)
-        if [ "$at_port" = "$at_port_tmp" ]; then
-            platform=$(uci -q get modem.modem$i.platform)
-            break
+get_neighborcell_unisoc(){
+    local at_command='AT+QENG="neighbourcell"'
+    nr_lock_check="AT+QNWLOCK=\"common/5g\""
+    lte_lock_check="AT+QNWLOCK=\"common/lte\""
+    lte_status=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $lte_lock_check | grep "+QNWLOCK:")
+    lte_lock_freq=$(echo $lte_status | awk -F',' '{print $2}')
+    lte_lock_pci=$(echo $lte_status | awk -F',' '{print $3}')
+    nr_status=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $nr_lock_check | grep "+QNWLOCK:")
+    nr_lock_pci=$(echo $nr_status | awk -F',' '{print $2}')
+    nr_lock_freq=$(echo $nr_status | awk -F',' '{print $3}')
+    [ -n "$lte_lock_freq" ] && lte_lock_status="locked"
+    [ -n "$nr_lock_freq" ] && nr_lock_status="locked"
+
+
+    sh ${SCRIPT_DIR}/modem_at.sh $at_port $at_command > /tmp/neighborcell
+    json_add_array "NR"
+    json_close_array
+    json_add_array "LTE"
+    json_close_array
+    json_add_object "lockcell_status"
+    if [ -n "$lte_lock_status" ]; then
+        json_add_string "LTE" "$lte_lock_status"
+        json_add_string "LTE_Freq" "$lte_lock_freq"
+        json_add_string "LTE_PCI" "$lte_lock_pci"
+    else
+        json_add_string "LTE" "unlock"
+    fi
+    if [ -n "$nr_lock_status" ]; then
+        json_add_string "NR" "$nr_lock_status"
+        json_add_string "NR_Freq" "$nr_lock_freq"
+        json_add_string "NR_PCI" "$nr_lock_pci"
+    else
+        json_add_string "NR" "unlock"
+    fi
+    json_close_object
+    while read line; do
+        if [ -n "$(echo $line | grep "+QENG:")" ]; then
+            # +QENG: "neighbourcell intra","LTE",<earfcn>,<PCID>,<
+            # RSRQ>,<RSRP>,<RSSI>,<SINR>,<srxlev>,<cell_resel_pri
+            # ority>,<s_non_intra_search>,<thresh_serving_low>,<s_i
+            # ntra_search>
+            # …]
+            # [+QENG: "neighbourcell inter","LTE",<earfcn>,<PCID>,<
+            # RSRQ>,<RSRP>,<RSSI>,<SINR>,<srxlev>,<cell_resel_pri
+            # ority>,<threshX_low>,<threshX_high>
+            # …]
+            # [+QENG:"neighbourcell","WCDMA",<uarfcn>,<cell_resel
+            # _priority>,<thresh_Xhigh>,<thresh_Xlow>,<PSC>,<RSC
+            # P><eccno>,<srxlev>
+            # …]
+            line=$(echo $line | sed 's/+QENG: //g')
+            case $line in
+                *WCDMA*)
+                    type="WCDMA"
+                    
+                    arfcn=$(echo $line | awk -F',' '{print $3}')
+                    pci=$(echo $line | awk -F',' '{print $4}')
+                    rscp=$(echo $line | awk -F',' '{print $6}')
+                    ecno=$(echo $line | awk -F',' '{print $7}')
+                    ;;
+                *LTE*)
+                    type="LTE"
+                    neighbourcell=$(echo $line | awk -F',' '{print $1}' | tr -d '"')
+                    arfcn=$(echo $line | awk -F',' '{print $3}')
+                    pci=$(echo $line | awk -F',' '{print $4}')
+                    rsrp=$(echo $line | awk -F',' '{print $5}')
+                    rsrq=$(echo $line | awk -F',' '{print $6}')
+
+                    ;;
+                *NR*)
+                    type="NR"
+                    arfcn=$(echo $line | awk -F',' '{print $3}')
+                    pci=$(echo $line | awk -F',' '{print $4}')
+                    rsrp=$(echo $line | awk -F',' '{print $5}')
+                    rsrq=$(echo $line | awk -F',' '{print $6}')
+                    ;;
+            esac
+            json_select $type
+            json_add_object ""
+            json_add_string "neighbourcell" "$neighbourcell"
+            json_add_string "arfcn" "$arfcn"
+            json_add_string "pci" "$pci"
+            json_add_string "rscp" "$rscp"
+            json_add_string "ecno" "$ecno"
+            json_add_string "rsrp" "$rsrp"
+            json_add_string "rsrq" "$rsrq"
+            json_close_object
+            json_select ".."
         fi
-    done
+    done < /tmp/neighborcell
+}
+
+get_neighborcell(){
+    debug "quectel set lockband info"
+    json_add_object "neighborcell"
     case "$platform" in
         "qualcomm")
-            quectel_get_neighborcell_qualcomm $at_port
+            get_neighborcell_qualcomm
         ;;
         "unisoc")
-            quectel_get_neighborcell_unisoc $at_port
+            get_neighborcell_unisoc
         ;;
         "lte")
-            quectel_get_neighborcell_lte $at_port
+            get_neighborcell_lte
         ;;
     esac
+    json_close_object
 }
 
-quectel_setlockcell(){
+
+
+set_neighborcell(){
     #at_port,func,celltype,arfcn,pci,scs,nrband
     #  "lockpci" "1"
     #  "unlockcell" "2"
     #  "manually search" "3"
     #  "reboot modem" "4"
-    local at_port="$1"
-    local func="$2"
-    local cell_type="$3"
-    local arfcn="$4"
-    local pci="$5"
-    local scs="$6"
-    local nrband="$7"
-    case $func in
-        "1")
-            quectel_lockpci $at_port  $cell_type $arfcn $pci $scs $nrband
-        ;;
-        "2")
-            quectel_unlockcell $at_port
-        ;;
-        
-        "4")
-            sh ${SCRIPT_DIR}/modem_reboot.sh $at_port at+cfun=1,1
-        ;;
-        "5")
-            quectel_unlockcell_lte $at_port
-        ;;
-        "6")
-            quectel_lockpci_lte $at_port  $cell_type $arfcn $pci $scs $nrband
-        ;;
-        "7")
-            quectel_lockarfn_lte $at_port  $cell_type $arfcn $pci $scs $nrband
-        ;;
+    json_param=$1
+# {\"rat\":1,\"pci\":\"113\",\"arfcn\":\"627264\",\"band\":\"\",\"scs\":0}"
+    rat=$(echo $json_param | jq -r '.rat')
+    pci=$(echo $json_param | jq -r '.pci')
+    arfcn=$(echo $json_param | jq -r '.arfcn')
+    band=$(echo $json_param | jq -r '.band')
+    scs=$(echo $json_param | jq -r '.scs')
+    case $platform in
+        "qualcomm")
+            lockcell_qualcomm
+            ;;
+        "unisoc")
+            lockcell_unisoc
+            ;;
+        "lte")
+            lockcell_lte
+            ;;
     esac
+    json_select "result"
+    json_add_string "setlockcell" "$res"
+    json_add_string "rat" "$rat"
+    json_add_string "pci" "$pci"
+    json_add_string "arfcn" "$arfcn"
+    json_add_string "band" "$band"
+    json_add_string "scs" "$scs"
+    json_close_object
 }
 
-quectel_unlockcell(){
+lockcell_qualcomm(){
+    if [ -z "$pci" ] && [ -z "$arfcn" ]; then
+        unlock4g="AT+QNWLOCK=\"common/4g\",0"
+        unlocknr="AT+QNWLOCK=\"common/5g\",0"
+        res1=$(sh ${SCRIPT_DIR}/modem_at.sh $1 $unlocknr)
+        res2=$(sh ${SCRIPT_DIR}/modem_at.sh $1 $unlock4g)
+        res=$res1,$res2
+    else
+        lock4g="AT+QNWLOCK=\"common/4g\",1,$arfcn,$pci"
+        locknr="AT+QNWLOCK=\"common/5g\",1,$pci,$arfcn,$scs,$band"
+        if [ $rat = "1" ]; then
+            res=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $locknr)
+        else
+            res=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $lock4g)
+        fi
+    fi
+   
+}
+
+lockcell_unisoc(){
+    if [ -z "$pci" ] && [ -z "$arfcn" ]; then
+        unlock4g="AT+QNWLOCK=\"common/lte\",0"
+        unlocknr="AT+QNWLOCK=\"common/5g\",0"
+        res1=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $unlocknr)
+        res2=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $unlock4g)
+        res=$res1,$res2
+    else
+        lock4g="AT+QNWLOCK=\"common/lte\",1,$arfcn,$pci"
+        locknr="AT+QNWLOCK=\"common/5g\",1,$arfcn,$pci"
+        if [ $rat = "1" ]; then
+            res=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $locknr)
+        else
+            res=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $lock4g)
+        fi
+    fi
+}
+
+lockcell_lte(){
+    if [ -z "$pci" ] && [ -z "$arfcn" ]; then
+        unlocklte="AT+QNWLOCK=\"common/lte\",0"
+        res1=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $unlocklte)
+        res=$res1
+    else
+        if [ -z $pci ] && [ -n $arfcn ]; then
+            locklte="AT+QNWLOCK=\"common/lte\",1,$arfcn,0"
+        elif [ -n $pci ] && [ -n $arfcn ]; then
+            locklte="AT+QNWLOCK=\"common/lte\",2,$arfcn,$pci"
+        fi
+        res=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $locklte)
+    fi
+}
+
+unlockcell(){
     unlock4g="AT+QNWLOCK=\"common/4g\",0"
     unlocknr="AT+QNWLOCK=\"common/5g\",0"
     res2=$(sh ${SCRIPT_DIR}/modem_at.sh $1 $unlocknr)
     res3=$(sh ${SCRIPT_DIR}/modem_at.sh $1 $unlock4g)
 }
 
-quectel_unlockcell_lte(){
+unlockcell_unisoc(){
+    unlock4g="AT+QNWLOCK=\"common/lte\",0"
+    unlocknr="AT+QNWLOCK=\"common/5g\",0"
+    res2=$(sh ${SCRIPT_DIR}/modem_at.sh $1 $unlocknr)
+    res3=$(sh ${SCRIPT_DIR}/modem_at.sh $1 $unlock4g)
+}
+
+unlockcell_lte(){
     unlocklte="AT+QNWLOCK=\"common/lte\",0"
     res1=$(sh ${SCRIPT_DIR}/modem_at.sh $1 $unlocklte)
 }
 
-quectel_lockpci_nr(){
+lockpci_unisoc(){
+    local at_port="$1"
+    local cell_type="$2"
+    local arfcn="$3"
+    local pci="$4"
+    echo 1:$cell_type 2:$arfcn 3:$pci
+    case $cell_type in
+    0)
+        lock4g="AT+QNWLOCK=\"common/lte\",1,$arfcn,$pci"
+        res=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $lock4g)
+        echo $lock4g res:$res
+        ;;
+    1)
+        locknr="AT+QNWLOCK=\"common/5g\",1,$arfcn,$pci"
+        res=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $locknr)
+        echo $locknr res:$res
+        ;;
+    esac
+}
+
+lockpci_nr(){
     local at_port="$1"
     local cell_type="$2"
     local arfcn="$3"
@@ -1283,7 +1202,7 @@ quectel_lockpci_nr(){
     fi
 }
 
-quectel_lockpci_lte(){
+lockpci_lte(){
     local at_port="$1"
     local cell_type="$2"
     local arfcn="$3"
@@ -1294,7 +1213,7 @@ quectel_lockpci_lte(){
     res=$(sh ${SCRIPT_DIR}/modem_at.sh $at_port $locklte)
 }
 
-quectel_lockarfn_lte(){
+lockarfn_lte(){
     local at_port="$1"
     local cell_type="$2"
     local arfcn="$3"
@@ -1308,7 +1227,7 @@ quectel_lockarfn_lte(){
 
 #UL_bandwidth
 # $1:上行带宽数字
-quectel_get_bandwidth()
+get_bandwidth()
 {
     local network_type="$1"
     local bandwidth_num="$2"
@@ -1336,7 +1255,7 @@ quectel_get_bandwidth()
 
 #获取NR子载波间隔
 # $1:NR子载波间隔数字
-quectel_get_scs()
+get_scs()
 {
     local scs
 	case $1 in
@@ -1352,7 +1271,7 @@ quectel_get_scs()
 
 #获取物理信道
 # $1:物理信道数字
-quectel_get_phych()
+get_phych()
 {
     local phych
 	case $1 in
@@ -1364,7 +1283,7 @@ quectel_get_phych()
 
 #获取扩频因子
 # $1:扩频因子数字
-quectel_get_sf()
+get_sf()
 {
     local sf
 	case $1 in
@@ -1376,7 +1295,7 @@ quectel_get_sf()
 
 #获取插槽格式
 # $1:插槽格式数字
-quectel_get_slot()
+get_slot()
 {
     local slot=$1
 	# case $1 in
@@ -1387,7 +1306,7 @@ quectel_get_slot()
 }
 
 #小区信息
-quectel_cell_info()
+cell_info()
 {
     debug "Quectel cell info"
 
@@ -1407,11 +1326,11 @@ quectel_cell_info()
         endc_lte_physical_cell_id=$(echo "$lte" | awk -F',' '{print $6}')
         endc_lte_earfcn=$(echo "$lte" | awk -F',' '{print $7}')
         endc_lte_freq_band_ind_num=$(echo "$lte" | awk -F',' '{print $8}')
-        endc_lte_freq_band_ind=$(quectel_get_band "LTE" $endc_lte_freq_band_ind_num)
+        endc_lte_freq_band_ind=$(get_band "LTE" $endc_lte_freq_band_ind_num)
         ul_bandwidth_num=$(echo "$lte" | awk -F',' '{print $9}')
-        endc_lte_ul_bandwidth=$(quectel_get_bandwidth "LTE" $ul_bandwidth_num)
+        endc_lte_ul_bandwidth=$(get_bandwidth "LTE" $ul_bandwidth_num)
         dl_bandwidth_num=$(echo "$lte" | awk -F',' '{print $10}')
-        endc_lte_dl_bandwidth=$(quectel_get_bandwidth "LTE" $dl_bandwidth_num)
+        endc_lte_dl_bandwidth=$(get_bandwidth "LTE" $dl_bandwidth_num)
         endc_lte_tac=$(echo "$lte" | awk -F',' '{print $11}')
         endc_lte_rsrp=$(echo "$lte" | awk -F',' '{print $12}')
         endc_lte_rsrq=$(echo "$lte" | awk -F',' '{print $13}')
@@ -1429,11 +1348,11 @@ quectel_cell_info()
         endc_nr_rsrq=$(echo "$nr5g_nsa" | awk -F',' '{print $7}')
         endc_nr_arfcn=$(echo "$nr5g_nsa" | awk -F',' '{print $8}')
         endc_nr_band_num=$(echo "$nr5g_nsa" | awk -F',' '{print $9}')
-        endc_nr_band=$(quectel_get_band "NR" $endc_nr_band_num)
+        endc_nr_band=$(get_band "NR" $endc_nr_band_num)
         nr_dl_bandwidth_num=$(echo "$nr5g_nsa" | awk -F',' '{print $10}')
-        endc_nr_dl_bandwidth=$(quectel_get_bandwidth "NR" $nr_dl_bandwidth_num)
+        endc_nr_dl_bandwidth=$(get_bandwidth "NR" $nr_dl_bandwidth_num)
         scs_num=$(echo "$nr5g_nsa" | awk -F',' '{print $16}' | sed 's/\r//g')
-        endc_nr_scs=$(quectel_get_scs $scs_num)
+        endc_nr_scs=$(get_scs $scs_num)
     else
         #SA，LTE，WCDMA模式
         response=$(echo "$response" | grep "+QENG:")
@@ -1449,14 +1368,14 @@ quectel_cell_info()
                 nr_tac=$(echo "$response" | awk -F',' '{print $9}')
                 nr_arfcn=$(echo "$response" | awk -F',' '{print $10}')
                 nr_band_num=$(echo "$response" | awk -F',' '{print $11}')
-                nr_band=$(quectel_get_band "NR" $nr_band_num)
+                nr_band=$(get_band "NR" $nr_band_num)
                 nr_dl_bandwidth_num=$(echo "$response" | awk -F',' '{print $12}')
-                nr_dl_bandwidth=$(quectel_get_bandwidth "NR" $nr_dl_bandwidth_num)
+                nr_dl_bandwidth=$(get_bandwidth "NR" $nr_dl_bandwidth_num)
                 nr_rsrp=$(echo "$response" | awk -F',' '{print $13}')
                 nr_rsrq=$(echo "$response" | awk -F',' '{print $14}')
                 nr_sinr=$(echo "$response" | awk -F',' '{print $15}')
                 nr_scs_num=$(echo "$response" | awk -F',' '{print $16}')
-                nr_scs=$(quectel_get_scs $nr_scs_num)
+                nr_scs=$(get_scs $nr_scs_num)
                 nr_srxlev=$(echo "$response" | awk -F',' '{print $17}' | sed 's/\r//g')
             ;;
             "LTE"|"CAT-M"|"CAT-NB")
@@ -1468,11 +1387,11 @@ quectel_cell_info()
                 lte_physical_cell_id=$(echo "$response" | awk -F',' '{print $8}')
                 lte_earfcn=$(echo "$response" | awk -F',' '{print $9}')
                 lte_freq_band_ind_num=$(echo "$response" | awk -F',' '{print $10}')
-                lte_freq_band_ind=$(quectel_get_band "LTE" $lte_freq_band_ind_num)
+                lte_freq_band_ind=$(get_band "LTE" $lte_freq_band_ind_num)
                 ul_bandwidth_num=$(echo "$response" | awk -F',' '{print $11}')
-                lte_ul_bandwidth=$(quectel_get_bandwidth "LTE" $ul_bandwidth_num)
+                lte_ul_bandwidth=$(get_bandwidth "LTE" $ul_bandwidth_num)
                 dl_bandwidth_num=$(echo "$response" | awk -F',' '{print $12}')
-                lte_dl_bandwidth=$(quectel_get_bandwidth "LTE" $dl_bandwidth_num)
+                lte_dl_bandwidth=$(get_bandwidth "LTE" $dl_bandwidth_num)
                 lte_tac=$(echo "$response" | awk -F',' '{print $13}')
                 lte_rsrp=$(echo "$response" | awk -F',' '{print $14}')
                 lte_rsrq=$(echo "$response" | awk -F',' '{print $15}')
@@ -1494,444 +1413,112 @@ quectel_cell_info()
                 wcdma_rscp=$(echo "$response" | awk -F',' '{print $11}')
                 wcdma_ecio=$(echo "$response" | awk -F',' '{print $12}')
                 wcdma_phych_num=$(echo "$response" | awk -F',' '{print $13}')
-                wcdma_phych=$(quectel_get_phych $wcdma_phych_num)
+                wcdma_phych=$(get_phych $wcdma_phych_num)
                 wcdma_sf_num=$(echo "$response" | awk -F',' '{print $14}')
-                wcdma_sf=$(quectel_get_sf $wcdma_sf_num)
+                wcdma_sf=$(get_sf $wcdma_sf_num)
                 wcdma_slot_num=$(echo "$response" | awk -F',' '{print $15}')
-                wcdma_slot=$(quectel_get_slot $wcdma_slot_num)
+                wcdma_slot=$(get_slot $wcdma_slot_num)
                 wcdma_speech_code=$(echo "$response" | awk -F',' '{print $16}')
                 wcdma_com_mod=$(echo "$response" | awk -F',' '{print $17}' | sed 's/\r//g')
             ;;
         esac
     fi
-
-    return
-
-    NR_NSA=$(echo $response | grep -o -i "+QENG:[ ]\?\"NR5G-NSA\",")
-    NR_SA=$(echo $response | grep -o -i "+QENG: \"SERVINGCELL\",[^,]\+,\"NR5G-SA\",\"[DFT]\{3\}\",")
-    if [ -n "$NR_NSA" ]; then
-        QENG=",,"$(echo $response" " | grep -o -i "+QENG: \"LTE\".\+\"NR5G-NSA\"," | tr " " ",")
-        QENG5=$(echo $response | grep -o -i "+QENG:[ ]\?\"NR5G-NSA\",[0-9]\{3\},[0-9]\{2,3\},[0-9]\{1,5\},-[0-9]\{2,5\},[-0-9]\{1,3\},-[0-9]\{2,3\},[0-9]\{1,7\},[0-9]\{1,3\}.\{1,6\}")
-        if [ -z "$QENG5" ]; then
-            QENG5=$(echo $response | grep -o -i "+QENG:[ ]\?\"NR5G-NSA\",[0-9]\{3\},[0-9]\{2,3\},[0-9]\{1,5\},-[0-9]\{2,3\},[-0-9]\{1,3\},-[0-9]\{2,3\}")
-            if [ -n "$QENG5" ]; then
-                QENG5=$QENG5",,"
-            fi
-        fi
-    elif [ -n "$NR_SA" ]; then
-	    QENG=$(echo $NR_SA | tr " " ",")
-	    QENG5=$(echo $response | grep -o -i "+QENG: \"SERVINGCELL\",[^,]\+,\"NR5G-SA\",\"[DFT]\{3\}\",[ 0-9]\{3,4\},[0-9]\{2,3\},[0-9A-F]\{1,10\},[0-9]\{1,5\},[0-9A-F]\{2,6\},[0-9]\{6,7\},[0-9]\{1,3\},[0-9]\{1,2\},-[0-9]\{2,5\},-[0-9]\{2,3\},[-0-9]\{1,3\}")
-    else
-	    QENG=$(echo $response" " | grep -o -i "+QENG: [^ ]\+ " | tr " " ",")
-    fi
-    
-    RAT=$(echo $QENG | cut -d, -f4 | grep -o "[-A-Z5]\{3,7\}")
-    case $RAT in
-        "GSM")
-            # MODE="GSM"
-            ;;
-        "WCDMA")
-            channel=$(echo $QENG | cut -d, -f9)
-            rscp="-"$(echo $QENG | cut -d, -f12 | grep -o "[0-9]\{1,3\}")
-            ecio=$(echo $QENG | cut -d, -f13)
-            ecio="-"$(echo $ecio | grep -o "[0-9]\{1,3\}")
-            ;;
-        "LTE"|"CAT-M"|"CAT-NB")
-            PCI=$(echo $QENG | cut -d, -f9)
-            channel=$(echo $QENG | cut -d, -f10)
-            LBAND=$(echo $QENG | cut -d, -f11 | grep -o "[0-9]\{1,3\}")
-            BW=$(echo $QENG | cut -d, -f12)
-            lte_bw
-            BWU=$BW
-            BW=$(echo $QENG | cut -d, -f13)
-            lte_bw
-            BWD=$BW
-            if [ -z "$BWD" ]; then
-                BWD="unknown"
-            fi
-            if [ -z "$BWU" ]; then
-                BWU="unknown"
-            fi
-            if [ -n "$LBAND" ]; then
-                LBAND="B"$LBAND" (Bandwidth $BWD MHz Down | $BWU MHz Up)"
-            fi
-            RSRP=$(echo $QENG | cut -d, -f15 | grep -o "[0-9]\{1,3\}")
-            if [ -n "$RSRP" ]; then
-                RSCP="-"$RSRP
-                RSRPLTE=$RSCP
-            fi
-            rsrq=$(echo $QENG | cut -d, -f16 | grep -o "[0-9]\{1,3\}")
-            if [ -n "$rsrq" ]; then
-                ecio="-"$rsrq
-            fi
-            rssi=$(echo $QENG | cut -d, -f17 | grep -o "\-[0-9]\{1,3\}")
-            if [ -n "$rssi" ]; then
-                CSQ_RSSI=$rssi" dBm"
-            fi
-            sinrr=$(echo $QENG | cut -d, -f18 | grep -o "[0-9]\{1,3\}")
-            if [ -n "$sinrr" ]; then
-                if [ $sinrr -le 25 ]; then
-                    sinrr=$((($(echo $sinrr) * 2) -20))" dB"
-                fi
-            fi
-
-            if [ -n "$NR_NSA" ]; then
-                if [ -n "$QENG5" ]  && [ -n "$LBAND" ] && [ "$RSCP" != "-" ] && [ "$ecio" != "-" ]; then
-                    PCI="$PCI, "$(echo $QENG5 | cut -d, -f4)
-                    SCHV=$(echo $QENG5 | cut -d, -f8)
-                    SLBV=$(echo $QENG5 | cut -d, -f9)
-                    BW=$(echo $QENG5 | cut -d, -f10 | grep -o "[0-9]\{1,3\}")
-                    if [ -n "$SLBV" ]; then
-                        LBAND=$LBAND"<br />n"$SLBV
-                        if [ -n "$BW" ]; then
-                            nr_bw
-                            LBAND=$LBAND" (Bandwidth $BW MHz)"
-                        fi
-                        if [ "$SCHV" -ge 123400 ]; then
-                            channel=$channel", "$SCHV
-                        else
-                            channel=$channel", -"
-                        fi
-                    else
-                        LBAND=$LBAND"<br />nxx (unknown NR5G band)"
-                        channel=$channel", -"
-                    fi
-                    RSCP=$RSCP" dBm<br />"$(echo $QENG5 | cut -d, -f5)
-                    sinrr=$(echo $QENG5 | cut -d, -f6 | grep -o "[0-9]\{1,3\}")
-                    if [ -n "$sinrr" ]; then
-                        if [ $sinrr -le 30 ]; then
-                            SINR=$SINR"<br />"$((($(echo $sinrr) * 2) -20))" dB"
-                        fi
-                    fi
-                    ecio=$ecio" (4G) dB<br />"$(echo $QENG5 | cut -d, -f7)" (5G) "
-                fi
-            fi
-            if [ -z "$LBAND" ]; then
-                LBAND="-"
-            else
-                if [ -n "$QCA" ]; then
-                    QCA=$(echo $QCA | grep -o "\"S[CS]\{2\}\"[-0-9A-Z,\"]\+")
-                    for QCAL in $(echo "$QCA"); do
-                        if [ $(echo "$QCAL" | cut -d, -f7) = "2" ]; then
-                            SCHV=$(echo $QCAL | cut -d, -f2 | grep -o "[0-9]\+")
-                            SRATP="B"
-                            if [ -n "$SCHV" ]; then
-                                channel="$channel, $SCHV"
-                                if [ "$SCHV" -gt 123400 ]; then
-                                    SRATP="n"
-                                fi
-                            fi
-                            SLBV=$(echo $QCAL | cut -d, -f6 | grep -o "[0-9]\{1,2\}")
-                            if [ -n "$SLBV" ]; then
-                                LBAND=$LBAND"<br />"$SRATP$SLBV
-                                BWD=$(echo $QCAL | cut -d, -f3 | grep -o "[0-9]\{1,3\}")
-                                if [ -n "$BWD" ]; then
-                                    UPDOWN=$(echo $QCAL | cut -d, -f13)
-                                    case "$UPDOWN" in
-                                        "UL" )
-                                            CATYPE="CA"$(printf "\xe2\x86\x91") ;;
-                                        "DL" )
-                                            CATYPE="CA"$(printf "\xe2\x86\x93") ;;
-                                        * )
-                                            CATYPE="CA" ;;
-                                    esac
-                                    if [ $BWD -gt 14 ]; then
-                                        LBAND=$LBAND" ("$CATYPE", Bandwidth "$(($(echo $BWD) / 5))" MHz)"
-                                    else
-                                        LBAND=$LBAND" ("$CATYPE", Bandwidth 1.4 MHz)"
-                                    fi
-                                fi
-                                LBAND=$LBAND
-                            fi
-                            PCI="$PCI, "$(echo $QCAL | cut -d, -f8)
-                        fi
-                    done
-                fi
-            fi
-            if [ $RAT = "CAT-M" ] || [ $RAT = "CAT-NB" ]; then
-                LBAND="B$(echo $QENG | cut -d, -f11) ($RAT)"
-            fi
-            ;;
-        "NR5G-SA")
-            if [ -n "$QENG5" ]; then
-                #AT+qnwcfg="NR5G_AMBR"  #查询速度
-                PCI=$(echo $QENG5 | cut -d, -f8)
-                channel=$(echo $QENG5 | cut -d, -f10)
-                LBAND=$(echo $QENG5 | cut -d, -f11)
-                BW=$(echo $QENG5 | cut -d, -f12)
-                nr_bw
-                LBAND="n"$LBAND" (Bandwidth $BW MHz)"
-                RSCP=$(echo $QENG5 | cut -d, -f13)
-                ecio=$(echo $QENG5 | cut -d, -f14)
-                if [ "$CSQ_PER" = "-" ]; then
-                    RSSI=$(rsrp2rssi $RSCP $BW)
-                    CSQ_PER=$((100 - (($RSSI + 51) * 100/-62)))"%"
-                    CSQ=$((($RSSI + 113) / 2))
-                    CSQ_RSSI=$RSSI" dBm"
-                fi
-                SINRR=$(echo $QENG5 | cut -d, -f15 | grep -o "[0-9]\{1,3\}")
-                if [ -n "$SINRR" ]; then
-                    if [ $SINRR -le 30 ]; then
-                        SINR=$((($(echo $SINRR) * 2) -20))" dB"
-                    fi
-                fi
-            fi
-            ;;
+    class="Cell Information"
+    add_plain_info_entry "network_mode" "$network_mode" "Network Mode"
+    case $network_mode in
+    "NR5G-SA Mode")
+        add_plain_info_entry "MMC" "$nr_mcc" "Mobile Country Code"
+        add_plain_info_entry "MNC" "$nr_mnc" "Mobile Network Code"
+        add_plain_info_entry "Duplex Mode" "$nr_duplex_mode" "Duplex Mode"
+        add_plain_info_entry "Cell ID" "$nr_cell_id" "Cell ID"
+        add_plain_info_entry "Physical Cell ID" "$nr_physical_cell_id" "Physical Cell ID"
+        add_plain_info_entry "TAC" "$nr_tac" "Tracking area code of cell servedby neighbor Enb"
+        add_plain_info_entry "ARFCN" "$nr_arfcn" "Absolute Radio-Frequency Channel Number"
+        add_plain_info_entry "Band" "$nr_band" "Band"
+        add_plain_info_entry "DL Bandwidth" "$nr_dl_bandwidth" "DL Bandwidth"
+        add_bar_info_entry "RSRP" "$nr_rsrp" "Reference Signal Received Power" -187 -29 Dbm
+        add_bar_info_entry "RSRQ" "$nr_rsrq" "Reference Signal Received Quality" -43 20 Dbm
+        add_bar_info_entry "SINR" "$nr_sinr" "Signal to Interference plus Noise Ratio Bandwidth" -23 40 DB
+        add_plain_info_entry "RxLev" "$nr_rxlev" "Received Signal Level"
+        add_plain_info_entry "SCS" "$nr_scs" "SCS"
+        add_plain_info_entry "Srxlev" "$nr_srxlev" "Serving Cell Receive Level"
+        
+        ;;
+    "EN-DC Mode")
+        add_plain_info_entry "LTE" "LTE" ""
+        add_plain_info_entry "MCC" "$endc_lte_mcc" "Mobile Country Code"
+        add_plain_info_entry "MNC" "$endc_lte_mnc" "Mobile Network Code"
+        add_plain_info_entry "Duplex Mode" "$endc_lte_duplex_mode" "Duplex Mode"
+        add_plain_info_entry "Cell ID" "$endc_lte_cell_id" "Cell ID"
+        add_plain_info_entry "Physical Cell ID" "$endc_lte_physical_cell_id" "Physical Cell ID"
+        add_plain_info_entry "EARFCN" "$endc_lte_earfcn" "E-UTRA Absolute Radio Frequency Channel Number"
+        add_plain_info_entry "Freq band indicator" "$endc_lte_freq_band_ind" "Freq band indicator"
+        add_plain_info_entry "Band" "$endc_lte_band" "Band"
+        add_plain_info_entry "UL Bandwidth" "$endc_lte_ul_bandwidth" "UL Bandwidth"
+        add_plain_info_entry "DL Bandwidth" "$endc_lte_dl_bandwidth" "DL Bandwidth"
+        add_plain_info_entry "TAC" "$endc_lte_tac" "Tracking area code of cell servedby neighbor Enb"
+        add_bar_info_entry "RSRP" "$endc_lte_rsrp" "Reference Signal Received Power" -140 -44 Dbm
+        add_bar_info_entry "RSRQ" "$endc_lte_rsrq" "Reference Signal Received Quality" -20 20 Dbm
+        add_bar_info_entry "RSSI" "$endc_lte_rssi" "Received Signal Strength Indicator" -140 -44 Dbm
+        add_bar_info_entry "SINR" "$endc_lte_sinr" "Signal to Interference plus Noise Ratio Bandwidth" -23 40 DB
+        add_plain_info_entry "RxLev" "$endc_lte_rxlev" "Received Signal Level"
+        add_plain_info_entry "RSSNR" "$endc_lte_rssnr" "Radio Signal Strength Noise Ratio"
+        add_plain_info_entry "CQI" "$endc_lte_cql" "Channel Quality Indicator"
+        add_plain_info_entry "TX Power" "$endc_lte_tx_power" "TX Power"
+        add_plain_info_entry "Srxlev" "$endc_lte_srxlev" "Serving Cell Receive Level"
+        add_plain_info_entry NR5G-NSA "NR5G-NSA" ""
+        add_plain_info_entry "MCC" "$endc_nr_mcc" "Mobile Country Code"
+        add_plain_info_entry "MNC" "$endc_nr_mnc" "Mobile Network Code"
+        add_plain_info_entry "Physical Cell ID" "$endc_nr_physical_cell_id" "Physical Cell ID"
+        add_plain_info_entry "ARFCN" "$endc_nr_arfcn" "Absolute Radio-Frequency Channel Number"
+        add_plain_info_entry "Band" "$endc_nr_band" "Band"
+        add_plain_info_entry "DL Bandwidth" "$endc_nr_dl_bandwidth" "DL Bandwidth"
+        add_bar_info_entry "RSRP" "$endc_nr_rsrp" "Reference Signal Received Power" -187 -29 Dbm
+        add_bar_info_entry "RSRQ" "$endc_nr_rsrq" "Reference Signal Received Quality" -43 20 Dbm
+        add_bar_info_entry "SINR" "$endc_nr_sinr" "Signal to Interference plus Noise Ratio Bandwidth" -23 40 DB
+        add_plain_info_entry "SCS" "$endc_nr_scs" "SCS"
+        ;;
+    "LTE Mode")
+        add_plain_info_entry "MCC" "$lte_mcc" "Mobile Country Code"
+        add_plain_info_entry "MNC" "$lte_mnc" "Mobile Network Code"
+        add_plain_info_entry "Duplex Mode" "$lte_duplex_mode" "Duplex Mode"
+        add_plain_info_entry "Cell ID" "$lte_cell_id" "Cell ID"
+        add_plain_info_entry "Physical Cell ID" "$lte_physical_cell_id" "Physical Cell ID"
+        add_plain_info_entry "EARFCN" "$lte_earfcn" "E-UTRA Absolute Radio Frequency Channel Number"
+        add_plain_info_entry "Freq band indicator" "$lte_freq_band_ind" "Freq band indicator"
+        add_plain_info_entry "Band" "$lte_band" "Band"
+        add_plain_info_entry "UL Bandwidth" "$lte_ul_bandwidth" "UL Bandwidth"
+        add_plain_info_entry "DL Bandwidth" "$lte_dl_bandwidth" "DL Bandwidth"
+        add_plain_info_entry "TAC" "$lte_tac" "Tracking area code of cell servedby neighbor Enb"
+        add_bar_info_entry "RSRQ" "$lte_rsrq" "Reference Signal Received Quality" -20 20 Dbm 
+        add_bar_info_entry "RSSI" "$lte_rssi" "Received Signal Strength Indicator" -140 -44 Dbm
+        add_bar_info_entry "SINR" "$lte_sinr" "Signal to Interference plus Noise Ratio Bandwidth" -23 40 DB
+        add_plain_info_entry "RxLev" "$lte_rxlev" "Received Signal Level"
+        add_plain_info_entry "RSSNR" "$lte_rssnr" "Radio Signal Strength Noise Ratio"
+        add_plain_info_entry "CQI" "$lte_cql" "Channel Quality Indicator"
+        add_plain_info_entry "TX Power" "$lte_tx_power" "TX Power"
+        add_plain_info_entry "Srxlev" "$lte_srxlev" "Serving Cell Receive Level"
+        
+        ;;
+    "WCDMA Mode")
+        add_plain_info_entry "MCC" "$wcdma_mcc" "Mobile Country Code"
+        add_plain_info_entry "MNC" "$wcdma_mnc" "Mobile Network Code"
+        add_plain_info_entry "LAC" "$wcdma_lac" "Location Area Code"
+        add_plain_info_entry "Cell ID" "$wcdma_cell_id" "Cell ID"
+        add_plain_info_entry "UARFCN" "$wcdma_uarfcn" "UTRA Absolute Radio Frequency Channel Number"
+        add_plain_info_entry "PSC" "$wcdma_psc" "Primary Scrambling Code"
+        add_plain_info_entry "RAC" "$wcdma_rac" "Routing Area Code"
+        add_plain_info_entry "Band" "$wcdma_band" "Band"
+        add_bar_info_entry "RSCP" "$wcdma_rscp" "Received Signal Code Power" -120 -25 Dbm
+        add_plain_info_entry "Ec/Io" "$wcdma_ecio" "Ec/Io"
+        add_plain_info_entry "Ec/No" "$wcdma_ecno" "Ec/No"
+        add_plain_info_entry "Physical Channel" "$wcdma_phych" "Physical Channel"
+        add_plain_info_entry "Spreading Factor" "$wcdma_sf" "Spreading Factor"
+        add_plain_info_entry "Slot" "$wcdma_slot" "Slot"
+        add_plain_info_entry "Speech Code" "$wcdma_speech_code" "Speech Code"
+        add_plain_info_entry "Compression Mode" "$wcdma_com_mod" "Compression Mode"
+        add_plain_info_entry "RxLev" "$wcdma_rxlev" "RxLev"
+        
+        ;;
     esac
-}
-
-# SIMCOM获取基站信息
-Quectel_Cellinfo()
-{
-    # return
-    #cellinfo0.gcom
-    OX1=$( sh modem_at.sh $at_port "AT+COPS=3,0;+COPS?")
-    OX2=$( sh modem_at.sh $at_port "AT+COPS=3,2;+COPS?")
-    OX=$OX1" "$OX2
-
-    #cellinfo.gcom
-    OY1=$( sh modem_at.sh $at_port "AT+CREG=2;+CREG?;+CREG=0")
-    OY2=$( sh modem_at.sh $at_port "AT+CEREG=2;+CEREG?;+CEREG=0")
-    OY3=$( sh modem_at.sh $at_port "AT+C5GREG=2;+C5GREG?;+C5GREG=0")
-    OY=$OY1" "$OY2" "$OY3
-
-
-    OXx=$OX
-    OX=$(echo $OX | tr 'a-z' 'A-Z')
-    OY=$(echo $OY | tr 'a-z' 'A-Z')
-    OX=$OX" "$OY
-
-    #debug "$OX"
-    #debug "$OY"
-
-    COPS="-"
-    COPS_MCC="-"
-    COPS_MNC="-"
-    COPSX=$(echo $OXx | grep -o "+COPS: [01],0,.\+," | cut -d, -f3 | grep -o "[^\"]\+")
-
-    if [ "x$COPSX" != "x" ]; then
-        COPS=$COPSX
-    fi
-
-    COPSX=$(echo $OX | grep -o "+COPS: [01],2,.\+," | cut -d, -f3 | grep -o "[^\"]\+")
-
-    if [ "x$COPSX" != "x" ]; then
-        COPS_MCC=${COPSX:0:3}
-        COPS_MNC=${COPSX:3:3}
-        if [ "$COPS" = "-" ]; then
-            COPS=$(awk -F[\;] '/'$COPS'/ {print $2}' $ROOTER/signal/mccmnc.data)
-            [ "x$COPS" = "x" ] && COPS="-"
-        fi
-    fi
-
-    if [ "$COPS" = "-" ]; then
-        COPS=$(echo "$O" | awk -F[\"] '/^\+COPS: 0,0/ {print $2}')
-        if [ "x$COPS" = "x" ]; then
-            COPS="-"
-            COPS_MCC="-"
-            COPS_MNC="-"
-        fi
-    fi
-    COPS_MNC=" "$COPS_MNC
-
-    OX=$(echo "${OX//[ \"]/}")
-    CID=""
-    CID5=""
-    RAT=""
-    REGV=$(echo "$OX" | grep -o "+C5GREG:2,[0-9],[A-F0-9]\{2,6\},[A-F0-9]\{5,10\},[0-9]\{1,2\}")
-    if [ -n "$REGV" ]; then
-        LAC5=$(echo "$REGV" | cut -d, -f3)
-        LAC5=$LAC5" ($(printf "%d" 0x$LAC5))"
-        CID5=$(echo "$REGV" | cut -d, -f4)
-        CID5L=$(printf "%010X" 0x$CID5)
-        RNC5=${CID5L:1:6}
-        RNC5=$RNC5" ($(printf "%d" 0x$RNC5))"
-        CID5=${CID5L:7:3}
-        CID5="Short $(printf "%X" 0x$CID5) ($(printf "%d" 0x$CID5)), Long $(printf "%X" 0x$CID5L) ($(printf "%d" 0x$CID5L))"
-        RAT=$(echo "$REGV" | cut -d, -f5)
-    fi
-    REGV=$(echo "$OX" | grep -o "+CEREG:2,[0-9],[A-F0-9]\{2,4\},[A-F0-9]\{5,8\}")
-    REGFMT="3GPP"
-    if [ -z "$REGV" ]; then
-        REGV=$(echo "$OX" | grep -o "+CEREG:2,[0-9],[A-F0-9]\{2,4\},[A-F0-9]\{1,3\},[A-F0-9]\{5,8\}")
-        REGFMT="SW"
-    fi
-    if [ -n "$REGV" ]; then
-        LAC=$(echo "$REGV" | cut -d, -f3)
-        LAC=$(printf "%04X" 0x$LAC)" ($(printf "%d" 0x$LAC))"
-        if [ $REGFMT = "3GPP" ]; then
-            CID=$(echo "$REGV" | cut -d, -f4)
-        else
-            CID=$(echo "$REGV" | cut -d, -f5)
-        fi
-        CIDL=$(printf "%08X" 0x$CID)
-        RNC=${CIDL:1:5}
-        RNC=$RNC" ($(printf "%d" 0x$RNC))"
-        CID=${CIDL:6:2}
-        CID="Short $(printf "%X" 0x$CID) ($(printf "%d" 0x$CID)), Long $(printf "%X" 0x$CIDL) ($(printf "%d" 0x$CIDL))"
-
-    else
-        REGV=$(echo "$OX" | grep -o "+CREG:2,[0-9],[A-F0-9]\{2,4\},[A-F0-9]\{2,8\}")
-        if [ -n "$REGV" ]; then
-            LAC=$(echo "$REGV" | cut -d, -f3)
-            CID=$(echo "$REGV" | cut -d, -f4)
-            if [ ${#CID} -gt 4 ]; then
-                LAC=$(printf "%04X" 0x$LAC)" ($(printf "%d" 0x$LAC))"
-                CIDL=$(printf "%08X" 0x$CID)
-                RNC=${CIDL:1:3}
-                CID=${CIDL:4:4}
-                CID="Short $(printf "%X" 0x$CID) ($(printf "%d" 0x$CID)), Long $(printf "%X" 0x$CIDL) ($(printf "%d" 0x$CIDL))"
-            else
-                LAC=""
-            fi
-        else
-            LAC=""
-        fi
-    fi
-    REGSTAT=$(echo "$REGV" | cut -d, -f2)
-    if [ "$REGSTAT" == "5" -a "$COPS" != "-" ]; then
-        COPS_MNC=$COPS_MNC" (Roaming)"
-    fi
-    if [ -n "$CID" -a -n "$CID5" ] && [ "$RAT" == "13" -o "$RAT" == "10" ]; then
-        LAC="4G $LAC, 5G $LAC5"
-        CID="4G $CID<br />5G $CID5"
-        RNC="4G $RNC, 5G $RNC5"
-    elif [ -n "$CID5" ]; then
-        LAC=$LAC5
-        CID=$CID5
-        RNC=$RNC5
-    fi
-    if [ -z "$LAC" ]; then
-        LAC="-"
-        CID="-"
-        RNC="-"
-    fi
-}
-
-#获取移远模组信息
-# $1:AT串口
-# $2:平台
-# $3:连接定义
-get_quectel_info()
-{
-    debug "get quectel info"
-    #设置AT串口
-    at_port="$1"
-    platform="$2"
-    define_connect="$3"
-
-    #基本信息
-    quectel_base_info
-
-	#SIM卡信息
-    quectel_sim_info
-    if [ "$sim_status" != "ready" ]; then
-        return
-    fi
-
-    #网络信息
-    quectel_network_info
-    if [ "$connect_status" != "connect" ]; then
-        return
-    fi
-
-    #小区信息
-    quectel_cell_info
-
-    return
-    
-    # Quectel_Cellinfo
-
-    #
-    OX=$( sh modem_at.sh $at_port "AT+QCAINFO"  | grep "+QCAINFO:"  )
-    QCA=$(echo $OX" " | grep -o -i "+QCAINFO: \"S[CS]\{2\}\".\+NWSCANMODE" | tr " " ",")
-
-
-    #
-    OX=$( sh modem_at.sh $at_port 'AT+QCFG="nwscanmode"'  | grep "+QCAINFO:"  )
-    QNSM=$(echo $OX | grep -o -i "+QCFG: \"NWSCANMODE\",[0-9]")
-    QNSM=$(echo "$QNSM" | grep -o "[0-9]")
-    if [ -n "$QNSM" ]; then
-        MODTYPE="6"
-        case $QNSM in
-        "0" )
-            NETMODE="1" ;;
-        "1" )
-            NETMODE="3" ;;
-        "2"|"5" )
-            NETMODE="5" ;;
-        "3" )
-            NETMODE="7" ;;
-        esac
-    fi
-    if [ -n "$QNWP" ]; then
-        MODTYPE="6"
-        case $QNWP in
-        "AUTO" )
-            NETMODE="1" ;;
-        "WCDMA" )
-            NETMODE="5" ;;
-        "LTE" )
-            NETMODE="7" ;;
-        "LTE:NR5G" )
-            NETMODE="8" ;;
-        "NR5G" )
-            NETMODE="9" ;;
-        esac
-    fi
-
-
-    #
-    OX=$( sh modem_at.sh $at_port 'AT+QNWPREFCFG="mode_pref"'  | grep "+QNWPREFCFG:"  )
-    QNWP=$(echo $OX | grep -o -i "+QNWPREFCFG: \"MODE_PREF\",[A-Z5:]\+" | cut -d, -f2)
-
-    #
-    OX=$( sh modem_at.sh $at_port "AT+QRSRP"  | grep "+QRSRP:"  )
-    QRSRP=$(echo "$OX" | grep -o -i "+QRSRP:[^,]\+,-[0-9]\{1,5\},-[0-9]\{1,5\},-[0-9]\{1,5\}[^ ]*")
-    if [ -n "$QRSRP" ] && [ "$RAT" != "WCDMA" ]; then
-        QRSRP1=$(echo $QRSRP | cut -d, -f1 | grep -o "[-0-9]\+")
-        QRSRP2=$(echo $QRSRP | cut -d, -f2)
-        QRSRP3=$(echo $QRSRP | cut -d, -f3)
-        QRSRP4=$(echo $QRSRP | cut -d, -f4)
-        QRSRPtype=$(echo $QRSRP | cut -d, -f5)
-        if [ "$QRSRPtype" == "NR5G" ]; then
-            if [ -n "$NR_SA" ]; then
-                RSCP=$QRSRP1
-                if [ -n "$QRPRP2" -a "$QRSRP2" != "-32768" ]; then
-                    RSCP1="RxD "$QRSRP2
-                fi
-                if [ -n "$QRSRP3" -a "$QRSRP3" != "-32768" ]; then
-                    RSCP=$RSCP" dBm<br />"$QRSRP3
-                fi
-                if [ -n "$QRSRP4" -a "$QRSRP4" != "-32768" ]; then
-                    RSCP1="RxD "$QRSRP4
-                fi
-            else
-                RSCP=$RSRPLTE
-                if [ -n "$QRSRP1" -a "$QRSRP1" != "-32768" ]; then
-                    RSCP=$RSCP" (4G) dBm<br />"$QRSRP1
-                    if [ -n "$QRSRP2" -a "$QRSRP2" != "-32768" ]; then
-                        RSCP="$RSCP,$QRSRP2"
-                        if [ -n "$QRSRP3" -a "$QRSRP3" != "-32768" ]; then
-                            RSCP="$RSCP,$QRSRP3"
-                            if [ -n "$QRSRP4" -a "$QRSRP4" != "-32768" ]; then
-                                RSCP="$RSCP,$QRSRP4"
-                            fi
-                        fi
-                        RSCP=$RSCP" (5G) "
-                    fi
-                fi
-            fi
-        elif [ "$QRSRP2$QRSRP3$QRSRP4" != "-44-44-44" -a -z "$QENG5" ]; then
-            RSCP=$QRSRP1
-            if [ "$QRSRP3$QRSRP4" == "-140-140" -o "$QRSRP3$QRSRP4" == "-44-44" -o "$QRSRP3$QRSRP4" == "-32768-32768" ]; then
-                RSCP1="RxD "$(echo $QRSRP | cut -d, -f2)
-            else
-                RSCP=$RSCP" dBm (RxD "$QRSRP2" dBm)<br />"$QRSRP3
-                RSCP1="RxD "$QRSRP4
-            fi
-        fi
-    fi
-
-
 }

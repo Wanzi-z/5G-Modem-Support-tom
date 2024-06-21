@@ -62,23 +62,23 @@ m_report_event()
 #模组预设
 # $1:AT串口
 # $2:连接定义
-m_modem_presets()
-{
-	local at_port="$1"
-	local define_connect="$2"
+# m_modem_presets()
+# {
+# 	local at_port="$1"
+# 	local define_connect="$2"
 
-	#运营商选择设置
-	local at_command='AT+COPS=0,0'
-	at "${at_port}" "${at_command}"
+# 	#运营商选择设置
+# 	local at_command='AT+COPS=0,0'
+# 	at "${at_port}" "${at_command}"
 
-	#设置IPv6地址格式
-	at_command='AT+CGPIAF=1,0,0,0'
-	at "${at_port}" "${at_command}"
+# 	#设置IPv6地址格式
+# 	at_command='AT+CGPIAF=1,0,0,0'
+# 	at "${at_port}" "${at_command}"
 
-	#PDP设置
-	at_command="AT+CGDCONT=${define_connect},\"IPV4V6\",\"\""
-	at "${at_port}" "${at_command}"
-}
+# 	#PDP设置
+# 	at_command="AT+CGDCONT=${define_connect},\"IPV4V6\",\"\""
+# 	at "${at_port}" "${at_command}"
+# }
 
 #获取设备物理路径
 # $1:网络设备路径
@@ -312,7 +312,20 @@ m_del_modem_config()
 	[ -z "$modem_no" ] && return
 
 	#删除该模组的配置
-	uci -q del modem.modem${modem_no}
+	uci batch <<EOF
+del modem.modem${modem_no}.data_interface
+del modem.modem${modem_no}.path
+del modem.modem${modem_no}.network
+del modem.modem${modem_no}.network_interface
+del modem.modem${modem_no}.ports
+del modem.modem${modem_no}.at_port
+del modem.modem${modem_no}.name
+del modem.modem${modem_no}.manufacturer
+del modem.modem${modem_no}.define_connect
+del modem.modem${modem_no}.platform
+del modem.modem${modem_no}.modes
+EOF
+
 	uci -q set modem.@global[0].modem_number=$((modem_number-1))
 	uci commit modem
 
@@ -337,8 +350,8 @@ m_set_usb_device()
 
 	if [ "$action" = "add" ]; then
 		#添加USB模组ID
-		m_add_usb_id "${manufacturer_id}" "${product_id}"
-
+		#m_add_usb_id "${manufacturer_id}" "${product_id}"
+		logger -t modem_usb "add_usb_id: ${manufacturer_id} ${product_id}"
 		#设置模组配置
 		# m_set_modem_hardware_config "${physical_path}"
 
@@ -369,6 +382,14 @@ handle_special_modem_name()
 		modem_name="rm500u-cn"
 	}
 
+	[[ "$modem_name" = *"rm500u-ea"* ]] && {
+		modem_name="rm500u-ea"
+	}
+
+	#rg200u-cn
+	[[ "$modem_name" = *"rg200u-cn"* ]] && {
+		modem_name="rg200u-cn"
+	}
 	echo "$modem_name"
 }
 
@@ -432,14 +453,15 @@ retry_set_modem_config()
 			uci set modem.modem${modem_no}.platform="${platform}"
 			uci set modem.modem${modem_no}.define_connect="${define_connect}"
 			uci set modem.modem${modem_no}.enable_dial=1
-			uci set modem.modem${modem_no}.pdp_type="ipv4v6"
+			uci set modem.modem${modem_no}.pdp_type="ip"
 			uci -q del modem.modem${modem_no}.modes #删除原来的拨号模式列表
+			uci commit modem
 			for mode in $modes; do
 				uci add_list modem.modem${modem_no}.modes="${mode}"
 			done
 
 			#设置模组预设
-			m_modem_presets "${at_port}" "${define_connect}"
+			#m_modem_presets "${at_port}" "${define_connect}"
 			#打印日志
 			m_log "info" "Successfully retrying to configure the Modem ${modem_name}"
 
@@ -531,13 +553,14 @@ m_set_modem_config()
 	uci set modem.modem${modem_no}.define_connect="${define_connect}"
 	uci set modem.modem${modem_no}.platform="${platform}"
 	uci set modem.modem${modem_no}.enable_dial=1
-	uci set modem.modem${modem_no}.pdp_type="ipv4v6"
+	uci set modem.modem${modem_no}.pdp_type="ip"
 	uci -q del modem.modem${modem_no}.modes #删除原来的拨号模式列表
 	for mode in $modes; do
 		uci add_list modem.modem${modem_no}.modes="${mode}"
 	done
+	uci commit modem
 	#设置模组预设
-	m_modem_presets "${at_port}" "${define_connect}"
+	#m_modem_presets "${at_port}" "${define_connect}"
 
 	#打印日志
 	m_log "info" "${log_message}"
@@ -628,6 +651,7 @@ m_set_tty_device()
 
 		#设置AT串口
 		m_set_usb_at_port "${modem_no}" "${port}" "${physical_path}"
+		
 	fi
 }
 
@@ -725,24 +749,7 @@ enable_dial()
 # $1:网络设备
 disable_dial()
 {
-	local network="$1"
-
-	local i=0
-	while true; do
-		#查看该网络设备的配置是否启用
-		local modem_network=$(uci -q get modem.@dial-config[${i}].network)
-		[ -z "$modem_network" ] && break
-		if [ "$network" = "$modem_network" ]; then
-			local enable=$(uci -q get modem.@dial-config[${i}].enable)
-			if [ "$enable" = "1" ]; then
-				uci set modem.@dial-config[${i}].enable=0
-				uci commit modem
-				service modem reload
-				break
-			fi
-		fi
-		i=$((i+1))
-	done
+	/etc/init.d/modem_network restart
 }
 
 #设置模组串口
@@ -811,7 +818,6 @@ m_set_modem_port()
 		elif [[ "$port" = *"DUN"* ]]; then
 			m_set_pcie_at_port "${modem_no}" "${port}" "${physical_path}"
 		fi
-
 		#缓存当前串口
 		port_cache="${port}"
     done

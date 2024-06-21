@@ -11,9 +11,17 @@ s = m:section(NamedSection, "global", "global", translate("Global Config"))
 s.anonymous = true
 s.addremove = false
 
-o = s:option(Flag, "enable_dial", translate("Enable"))
+o = s:option(Flag, "enable_dial", translate("Enable Dial"))
 o.rmempty = false
 o.description = translate("Enable dial configurations")
+
+o = s:option(Button, "reload_dial", translate("Reload Dial Configurations"))
+o.inputstyle = "apply"
+o.description = translate("Manually Reload dial configurations When the dial configuration fails to take effect")
+o.write = function()
+    sys.call("/etc/init.d/modem_network reload")
+    luci.http.redirect(d.build_url("admin", "network", "modem", "dial_overview"))
+end
 
 -- 添加模块状态
 m:append(Template("modem/modem_status"))

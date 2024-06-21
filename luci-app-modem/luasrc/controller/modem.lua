@@ -6,66 +6,38 @@ local json = require("luci.jsonc")
 uci = luci.model.uci.cursor()
 local script_path="/usr/share/modem/"
 local run_path="/tmp/run/modem/"
+local modem_ctrl = "/usr/share/modem/modem_ctrl.sh "
 
 function index()
     if not nixio.fs.access("/etc/config/modem") then
         return
     end
 
-	entry({"admin", "network", "modem"}, alias("admin", "network", "modem", "modem_info"), translate("Modem"), 100).dependent = true
-
+	entry({"admin", "network", "modem"}, alias("admin", "network", "modem", "modem_info"), luci.i18n.translate("Modem"), 100).dependent = true
+	--mwan配置
+	entry({"admin", "network", "modem", "mwan_config"}, cbi("modem/mwan_config"), luci.i18n.translate("Mwan Config"), 1).leaf = true
+	entry({"admin", "network", "modem", "modem_ttl"}, cbi("modem/modem_ttl"), luci.i18n.translate("TTL Config"), 50).leaf = true
+	--sim卡配置
+	entry({"admin", "network", "modem", "modem_sim"}, cbi("modem/modem_sim"), luci.i18n.translate("SIM Config"), 55).leaf = true
+	entry({"admin", "network", "modem", "set_sim"}, call("setSIM"), nil).leaf = true
+	entry({"admin", "network", "modem", "get_sim"}, call("getSIM"), nil).leaf = true
 	--模块信息
-	entry({"admin", "network", "modem", "modem_info"}, template("modem/modem_info"), translate("Modem Information"),10).leaf = true
-	entry({"admin", "network", "modem", "get_at_port"}, call("getATPort"), nil).leaf = true
-	entry({"admin", "network", "modem", "get_modem_info"}, call("getModemInfo")).leaf = true
-
+	entry({"admin", "network", "modem", "modem_info"}, template("modem/modem_info"), luci.i18n.translate("Modem Information"),10).leaf = true
+	entry({"admin", "network", "modem", "get_modem_cfg"}, call("getModemCFG"), nil).leaf = true
+	entry({"admin", "network", "modem", "modem_ctrl"}, call("modemCtrl")).leaf = true
 	--拨号配置
-	entry({"admin", "network", "modem", "dial_overview"},cbi("modem/dial_overview"),translate("Dial Overview"),20).leaf = true
+	entry({"admin", "network", "modem", "dial_overview"},cbi("modem/dial_overview"),luci.i18n.translate("Dial Overview"),20).leaf = true
 	entry({"admin", "network", "modem", "dial_config"}, cbi("modem/dial_config")).leaf = true
 	entry({"admin", "network", "modem", "get_modems"}, call("getModems"), nil).leaf = true
 	entry({"admin", "network", "modem", "get_dial_log_info"}, call("getDialLogInfo"), nil).leaf = true
 	entry({"admin", "network", "modem", "clean_dial_log"}, call("cleanDialLog"), nil).leaf = true
-	entry({"admin", "network", "modem", "status"}, call("act_status")).leaf = true
-
 	--模块调试
-	entry({"admin", "network", "modem", "modem_debug"},template("modem/modem_debug"),translate("Modem Debug"),30).leaf = true
-	entry({"admin", "network", "modem", "quick_commands_config"}, cbi("modem/quick_commands_config")).leaf = true
-	entry({"admin", "network", "modem", "get_mode_info"}, call("getModeInfo"), nil).leaf = true
-	entry({"admin", "network", "modem", "set_mode"}, call("setMode"), nil).leaf = true
-	entry({"admin", "network", "modem", "get_network_prefer_info"}, call("getNetworkPreferInfo"), nil).leaf = true
-	entry({"admin", "network", "modem", "set_network_prefer"}, call("setNetworkPrefer"), nil).leaf = true
-	entry({"admin", "network", "modem", "get_lockband"}, call("getLockBand"), nil).leaf = true
-	entry({"admin", "network", "modem", "set_lockband"}, call("setLockBand"), nil).leaf = true
-	entry({"admin", "network", "modem", "get_neighbor_cellinfo"}, call("getNeighbor"), nil).leaf = true
-	entry({"admin", "network", "modem", "set_lock_cell"}, call("setLockCell"), nil).leaf = true
-	entry({"admin", "network", "modem", "get_self_test_info"}, call("getSelfTestInfo"), nil).leaf = true
-	entry({"admin", "network", "modem", "get_quick_commands"}, call("getQuickCommands"), nil).leaf = true
+	entry({"admin", "network", "modem", "modem_debug"},template("modem/modem_debug"),luci.i18n.translate("Modem Debug"),30).leaf = true
 	entry({"admin", "network", "modem", "send_at_command"}, call("sendATCommand"), nil).leaf = true
-	entry({"admin", "network", "modem", "get_imei"}, call("getIMEI"), nil).leaf = true
-	entry({"admin", "network", "modem", "set_imei"}, call("setIMEI"), nil).leaf = true
-	-- entry({"admin", "network", "modem", "get_modem_debug_info"}, call("getModemDebugInfo"), nil).leaf = true
-
 	--插件设置
-	entry({"admin", "network", "modem", "plugin_config"},cbi("modem/plugin_config"),translate("Plugin Config"),40).leaf = true
+	entry({"admin", "network", "modem", "plugin_config"},cbi("modem/plugin_config"),luci.i18n.translate("Plugin Config"),40).leaf = true
 	entry({"admin", "network", "modem", "modem_config"}, cbi("modem/modem_config")).leaf = true
 	entry({"admin", "network", "modem", "modem_scan"}, call("modemScan"), nil).leaf = true
-
-	--插件信息
-	entry({"admin", "network", "modem", "plugin_info"},template("modem/plugin_info"),translate("Plugin Info"),50).leaf = true
-	entry({"admin", "network", "modem", "get_plugin_info"}, call("getPluginInfo"), nil).leaf = true
-
-	--AT命令旧界面
-	entry({"admin", "network", "modem", "at_command_old"},template("modem/at_command_old")).leaf = true
-end
-
---[[
-@Description 判断字符串是否含有字母
-@Params
-	str 字符串
-]]
-function hasLetters(str)
-    local pattern = "%a" -- 匹配字母的正则表达式
-    return string.find(str, pattern) ~= nil
 end
 
 --[[
@@ -78,6 +50,47 @@ function shell(command)
 	local odp = odpall:read("*a")
 	odpall:close()
 	return odp
+end
+
+function translate_modem_info(result)
+	modem_info = result["modem_info"]
+	response = {}
+	for k,entry in pairs(modem_info) do
+		if type(entry) == "table" then
+			key = entry["key"]
+			full_name = entry["full_name"]
+			if full_name then
+				full_name = luci.i18n.translate(full_name)
+			elseif key then
+				full_name = luci.i18n.translate(key)
+			end
+			entry["full_name"] = full_name
+			if entry["class"] then
+				entry["class"] = luci.i18n.translate(entry["class"])
+			end
+			table.insert(response, entry)
+		end
+	end
+	return response
+end
+
+function modemCtrl()
+	local action = http.formvalue("action")
+	local cfg_id = http.formvalue("cfg")
+	local params = http.formvalue("params")
+	local translate = http.formvalue("translate")
+	if params then
+		result = shell(modem_ctrl..action.." "..cfg_id.." ".."\""..params.."\"")
+	else 
+		result = shell(modem_ctrl..action.." "..cfg_id)
+	end
+	if translate == "1" then
+		modem_more_info = json.parse(result)
+		modem_more_info = translate_modem_info(modem_more_info)
+		result = json.stringify(modem_more_info)
+	end
+	luci.http.prepare_content("application/json")
+	luci.http.write(result)
 end
 
 --[[
@@ -148,193 +161,8 @@ function getModes(at_port)
 	return modes
 end
 
---[[
-@Description 获取模组连接状态
-@Params
-	at_port AT串口
-	manufacturer 制造商
-	define_connect 连接定义
-]]
-function getModemConnectStatus(at_port,manufacturer,define_connect)
 
-	local connect_status="unknown"
 
-	if at_port and manufacturer~="unknown" then
-		local command="source "..script_path..manufacturer..".sh && "..manufacturer.."_get_connect_status "..at_port.." "..define_connect
-		local result=shell(command)
-		connect_status=string.gsub(result, "\n", "")
-	end
-
-	return connect_status
-end
-
---[[
-@Description 获取模组设备信息
-@Params
-	at_port AT串口
-]]
-function getModemDeviceInfo(at_port)
-	local modem_device_info={}
-
-	uci:foreach("modem", "modem-device", function (modem_device)
-		if at_port == modem_device["at_port"] then
-			--获取数据接口
-			local data_interface=modem_device["data_interface"]:upper()
-			--获取连接状态
-			local connect_status=getModemConnectStatus(modem_device["at_port"],modem_device["manufacturer"],modem_device["define_connect"])
-
-			--设置值
-			modem_device_info=modem_device
-			modem_device_info["data_interface"]=data_interface
-			modem_device_info["connect_status"]=connect_status
-			return true
-		end
-	end)
-
-	return modem_device_info
-end
-
---[[
-@Description 获取模组更多信息
-@Params
-	at_port AT串口
-	manufacturer 制造商
-]]
-function getModemMoreInfo(at_port,manufacturer,platform,define_connect)
-
-	--获取模组信息
-	local command="sh "..script_path.."modem_info.sh".." "..at_port.." "..manufacturer.." "..platform.." "..define_connect
-	local result=shell(command)
-
-	--设置值
-	local modem_more_info=json.parse(result)
-	return modem_more_info
-end
-
---[[
-@Description 模块状态获取
-]]
-function getModemInfo()
-
-	--获取AT串口
-    local at_port = http.formvalue("port")
-
-	--获取信息
-	local modem_device_info
-	local modem_more_info
-	if at_port then
-		modem_device_info=getModemDeviceInfo(at_port)
-		modem_more_info=getModemMoreInfo(at_port,modem_device_info["manufacturer"],modem_device_info["platform"],modem_device_info["define_connect"])
-	end
-
-	--设置信息
-	local modem_info={}
-	modem_info["device_info"]=modem_device_info
-	modem_info["more_info"]=modem_more_info
-
-	--设置翻译
-	local translation={}
-	--设备信息翻译
-	-- if modem_device_info then
-	-- 	local name=modem_device_info["name"]
-	-- 	translation[name]=luci.i18n.translate(name)
-	-- 	local manufacturer=modem_device_info["manufacturer"]
-	-- 	translation[manufacturer]=luci.i18n.translate(manufacturer)
-	-- 	local mode=modem_device_info["mode"]
-	-- 	translation[mode]=luci.i18n.translate(mode)
-	-- 	local data_interface=modem_device_info["data_interface"]
-	-- 	translation[data_interface]=luci.i18n.translate(data_interface)
-	-- 	local network=modem_device_info["network"]
-	-- 	translation[network]=luci.i18n.translate(network)
-	-- end
-
-	--基本信息翻译
-	-- if modem_more_info["base_info"] then
-	-- 	for key in pairs(modem_more_info["base_info"]) do
-	-- 		local value=modem_more_info["base_info"][key]
-	-- 		--翻译值
-	-- 		translation[value]=luci.i18n.translate(value)
-	-- 	end
-	-- end
-	--SIM卡信息翻译
-	if modem_more_info["sim_info"] then
-		local sim_info=modem_more_info["sim_info"]
-		for i = 1, #sim_info do
-			local info = sim_info[i]
-			for key in pairs(info) do
-				--翻译键
-				translation[key]=luci.i18n.translate(key)
-				-- local value=info[key]
-				-- if hasLetters(value) then
-				-- 	--翻译值
-				-- 	translation[value]=luci.i18n.translate(value)
-				-- end
-			end
-		end
-	end
-	--网络信息翻译
-	if modem_more_info["network_info"] then
-		local network_info=modem_more_info["network_info"]
-		for i = 1, #network_info do
-			local info = network_info[i]
-			for key in pairs(info) do
-				--翻译键
-				translation[key]=luci.i18n.translate(key)
-				-- local value=info[key]
-				-- if hasLetters(value) then
-				-- 	--翻译值
-				-- 	translation[value]=luci.i18n.translate(value)
-				-- end
-			end
-		end
-	end
-	--小区信息翻译
-	if modem_more_info["cell_info"] then
-		for network_mode_key in pairs(modem_more_info["cell_info"]) do
-			--翻译网络模式
-			translation[network_mode_key]=luci.i18n.translate(network_mode_key)
-			if network_mode_key == "EN-DC Mode" then
-				local network_mode=modem_more_info["cell_info"][network_mode_key]
-				for i = 1, #network_mode do
-					for key in pairs(network_mode[i]) do
-						--获取每个网络类型信息
-						local network_type=network_mode[i][key]
-						for j = 1, #network_type do
-							local info = network_type[j]
-							for key in pairs(info) do
-								translation[key]=luci.i18n.translate(key)
-							end
-						end
-					end
-				end
-			else
-				--获取网络类型信息
-				local network_type=modem_more_info["cell_info"][network_mode_key]
-				for i = 1, #network_type do
-					local info = network_type[i]
-					for key in pairs(info) do
-						translation[key]=luci.i18n.translate(key)
-					end
-				end
-			end
-		end
-	end
-	--添加额外翻译
-	translation["Unknown"]=luci.i18n.translate("Unknown")
-	translation["Excellent"]=luci.i18n.translate("Excellent")
-	translation["Good"]=luci.i18n.translate("Good")
-	translation["Fair"]=luci.i18n.translate("Fair")
-	translation["Bad"]=luci.i18n.translate("Bad")
-
-	--整合数据
-	local data={}
-	data["modem_info"]=modem_info
-	data["translation"]=translation
-	
-	-- 写入Web界面
-	luci.http.prepare_content("application/json")
-	luci.http.write_json(data)
-end
 
 --[[
 @Description 获取模组信息
@@ -343,34 +171,33 @@ function getModems()
 	
 	-- 获取所有模组
 	local modems={}
-	local translation={}
 	uci:foreach("modem", "modem-device", function (modem_device)
-		-- 获取连接状态
-		local connect_status=getModemConnectStatus(modem_device["at_port"],modem_device["manufacturer"],modem_device["define_connect"])
-		-- 获取拨号模式
-		local mode=getMode(modem_device["at_port"],modem_device["manufacturer"],modem_device["platform"])
-
-		-- 获取翻译
-		translation[connect_status]=luci.i18n.translate(connect_status)
-		if modem_device["name"] then
-			translation[modem_device["name"]]=luci.i18n.translate(modem_device["name"])
+		config_name = modem_device[".name"]
+		modem_name = modem_device["name"]
+		cmd = modem_ctrl.."base_info "..config_name
+		result = shell(cmd)
+		json_result = json.parse(result)
+		modem_info = json_result["modem_info"]
+		tmp_info = {}
+		name = {
+			type = "plain_text",
+			key = "name",
+			value = modem_name
+		}
+		table.insert(tmp_info, name)
+		for k,v in pairs(modem_info) do
+			full_name = v["full_name"]
+			if full_name then
+				v["full_name"] = luci.i18n.translate(full_name)
+			end
+			table.insert(tmp_info, v)
 		end
-		translation[mode]=luci.i18n.translate(mode)
-
-		-- 设置值
-		local modem=modem_device
-		modem["connect_status"]=connect_status
-		modem["mode"]=mode
-
-		local modem_tmp={}
-		modem_tmp[modem_device[".name"]]=modem
-		table.insert(modems,modem_tmp)
+		table.insert(modems, tmp_info)
 	end)
 	
 	-- 设置值
 	local data={}
 	data["modems"]=modems
-	data["translation"]=translation
 
 	-- 写入Web界面
 	luci.http.prepare_content("application/json")
@@ -449,9 +276,7 @@ function cleanDialLog()
 	luci.http.write_json(data)
 end
 
---[[
-@Description 模块列表状态函数
-]]
+
 function act_status()
 	local e = {}
 	e.index = luci.http.formvalue("index")
@@ -460,59 +285,32 @@ function act_status()
 	luci.http.write_json(e)
 end
 
---[[
-@Description 获取模组的备注
-@Params
-	network 移动网络
-]]
-function getModemRemarks(network)
-	local remarks=""
-	uci:foreach("modem", "dial-config", function (config)
-		---配置启用，且备注存在
-		if network == config["network"] and config["enable"] == "1" then
-			if config["remarks"] then
-				remarks=" ("..config["remarks"]..")" --" (备注)"
-				
-				return true --跳出循环
-			end
-		end
-	end)
-	return remarks
-end
 
---[[
-@Description 获取AT串口
-]]
-function getATPort()
 
-	local at_ports={}
+function getModemCFG()
+
+	local cfgs={}
 	local translation={}
 
 	uci:foreach("modem", "modem-device", function (modem_device)
 		--获取模组的备注
 		local network=modem_device["network"]
-		local remarks=getModemRemarks(network)
-
+		local remarks=modem_device["remarks"]
+		local config_name=modem_device[".name"]
 		--设置模组AT串口
-		if modem_device["name"] and modem_device["at_port"] then
-			
-			local name=modem_device["name"]:upper()..remarks
-			if modem_device["name"] == "unknown" then
-				translation[modem_device["name"]]=luci.i18n.translate(modem_device["name"])
-				name=modem_device["name"]..remarks
-			end
-
-			local at_port = modem_device["at_port"]
-			--排序插入
-			at_port_tmp={}
-			at_port_tmp[at_port]=name
-			table.insert(at_ports, at_port_tmp)
-		end
+		local cfg = modem_device[".name"]
+		local at_port=modem_device["at_port"]
+		local name=modem_device["name"]:upper()
+		local config = {}
+		config["name"] = name
+		config["at_port"] = at_port
+		config["cfg"] = cfg
+		table.insert(cfgs, config)
 	end)
 
 	-- 设置值
 	local data={}
-	data["at_ports"]=at_ports
+	data["cfgs"]=cfgs
 	data["translation"]=translation
 
 	-- 写入Web界面
@@ -614,222 +412,71 @@ function getNetworkPreferInfo()
 	luci.http.write_json(modem_debug_info)
 end
 
---[[
-@Description 设置网络偏好
-]]
-function setNetworkPrefer()
-    local at_port = http.formvalue("port")
-	local network_prefer_config = json.stringify(http.formvalue("prefer_config"))
 
-	--获取制造商
-	local manufacturer=getManufacturer(at_port)
-
-	--设置模组网络偏好
-	local command="source "..script_path..manufacturer..".sh && "..manufacturer.."_set_network_prefer "..at_port.." "..network_prefer_config
-	shell(command)
-
-	--获取设置好后的模组网络偏好
-	local network_prefer={}
-	if at_port and manufacturer and manufacturer~="unknown" then
-		local command="source "..script_path..manufacturer..".sh && "..manufacturer.."_get_network_prefer "..at_port
-		local result=shell(command)
-		network_prefer=json.parse(result)
-	end
-
-	-- 写入Web界面
-	luci.http.prepare_content("application/json")
-	luci.http.write_json(network_prefer)
+function getSimSlot(sim_path)
+    local sim_slot = fs.readfile(sim_path)
+    local current_slot = string.match(sim_slot, "%d")
+    if current_slot == "0" then
+        return "SIM2"
+    else
+        return "SIM1"
+    end
 end
 
-function getNeighbor()
-	local at_port = http.formvalue("port")
-	local manufacturer = getManufacturer(at_port)
-	local command="source "..script_path..manufacturer..".sh && "..manufacturer.."_get_neighborcell "..at_port
-	local result=shell(command)
-	local neighbor_cellinfo=json.parse(result)
-	luci.http.prepare_content("application/json")
-	luci.http.write_json(neighbor_cellinfo)
+function getNextBootSlot()
+    local fw_print_cmd = "fw_printenv -n sim2"
+    local nextboot_slot = shell(fw_print_cmd)
+    if nextboot_slot == "" then
+        return "SIM1"
+    else
+        return "SIM2"
+    end
 end
 
-function setLockCell()
-	local at_port = http.formvalue("port")
-	local manufacturer = getManufacturer(at_port)
-	local func = http.formvalue("func") 
-	local pci = http.formvalue("pci") == nil and 0 or http.formvalue("pci")
-	local arfcn = http.formvalue("arfcn")  == nil and 0 or http.formvalue("arfcn")
-	local scs = http.formvalue("scs") == nil and 0 or http.formvalue("scs")
-	local nrband = http.formvalue("nrband") == nil and 0 or http.formvalue("nrband")
-	local celltype = http.formvalue("celltype") == nil and 0 or http.formvalue("celltype")
-	response={}
-
-	local command="source "..script_path..manufacturer..".sh && "..manufacturer.."_setlockcell "..at_port.." "..func .."  "..celltype.." "..arfcn.." "..pci.." "..scs.." "..nrband
-	local command=string.format("source %s%s.sh && %s_setlockcell \"%s\" \"%s\" \"%s\" \"%s\" \"%s\" \"%s\" \"%s\"",script_path,manufacturer,manufacturer,at_port,func,celltype,arfcn,pci,scs,nrband)
-	local result=shell(command)
-	response["response"]=result
-	response["time"]=os.date("%Y-%m-%d %H:%M:%S")
-
-	luci.http.prepare_content("application/json")
-	luci.http.write_json(response)
+function writeJsonResponse(current_slot, nextboot_slot)
+    local result_json = {}
+    result_json["current_slot"] = current_slot
+    result_json["nextboot_slot"] = nextboot_slot
+    luci.http.prepare_content("application/json")
+    luci.http.write_json(result_json)
 end
 
-function getLockBand()
-	local at_port = http.formvalue("port")
-	local manufacturer = getManufacturer(at_port)
-	local command="source "..script_path..manufacturer..".sh && "..manufacturer.."_get_lockband "..at_port
-	local result=shell(command)
-	--获取锁频配置
-	local lock_band_config={}
-	if at_port and manufacturer and manufacturer~="unknown" then
-		local command="source "..script_path..manufacturer..".sh && "..manufacturer.."_get_lockband "..at_port
-		local result=shell(command)
-		lock_band_config=json.parse(result)
-	end
-	luci.http.prepare_content("application/json")
-	luci.http.write_json(lock_band_config)
+function getSIM()
+    local sim_path = "/sys/class/gpio/sim/value"
+    local current_slot = getSimSlot(sim_path)
+    local nextboot_slot = getNextBootSlot()
+    writeJsonResponse(current_slot, nextboot_slot)
 end
 
-
-function setLockBand()
-	local at_port = http.formvalue("port")
-	local lock_band_config = http.formvalue("lock_band_config")
-	local rat = http.formvalue("rat")
-
-	--获取制造商
-	local manufacturer = getManufacturer(at_port)
-	local command1="source "..script_path..manufacturer..".sh && "..manufacturer.."_set_lockband "..at_port.." "..lock_band_config.." "..rat
-	local result1=shell(command1)
-	--获取锁频配置
-	local lock_band_config={}
-	if at_port and manufacturer and manufacturer~="unknown" then
-		local command="source "..script_path..manufacturer..".sh && "..manufacturer.."_get_lockband "..at_port
-		local result=shell(command)
-		lock_band_config=json.parse(result)
-	end
-	lock_band_config["command"]=command1
-	lock_band_config["result"]=result1
-	luci.http.prepare_content("application/json")
-	luci.http.write_json(lock_band_config)
+function setSIM()
+    local sim_gpio = "/sys/class/gpio/sim/value"
+    local modem_gpio = "/sys/class/gpio/4g/value"
+    local sim_slot = http.formvalue("slot")
+    local pre_detect = getSimSlot(sim_gpio)
+    
+    local reset_module = 1
+    if pre_detect == sim_slot then
+        reset_module = 0
+    end
+    if sim_slot == "SIM1" then
+        sysfs_cmd = "echo 1 >"..sim_gpio
+        fw_setenv_cmd = "fw_setenv sim2"
+    elseif sim_slot == "SIM2" then
+        sysfs_cmd = "echo 0 >"..sim_gpio
+        fw_setenv_cmd = "fw_setenv sim2 1"
+    end
+    shell(sysfs_cmd)
+    shell(fw_setenv_cmd)
+    if reset_module == 1 then
+        shell("echo 0 >"..modem_gpio)
+        os.execute("sleep 1")
+        shell("echo 1 >"..modem_gpio)
+    end
+    local current_slot = getSimSlot(sim_gpio)
+    local nextboot_slot = getNextBootSlot()
+    writeJsonResponse(current_slot, nextboot_slot)
 end
 
-function getIMEI()
-	local at_port = http.formvalue("port")
-	local manufacturer = getManufacturer(at_port)
-	local command="source "..script_path..manufacturer..".sh && "..manufacturer.."_get_imei "..at_port
-	local result=shell(command)
-	local result_json = {}
-	result_json["imei"] = result
-	luci.http.prepare_content("application/json")
-	luci.http.write_json(result_json)
-
-end
-
-function setIMEI()
-	local at_port = http.formvalue("port")
-	local imei = http.formvalue("imei")
-	local manufacturer = getManufacturer(at_port)
-	local command="source "..script_path..manufacturer..".sh && "..manufacturer.."_set_imei "..at_port .." "..imei
-	shell(command)
-	local command1="source "..script_path..manufacturer..".sh && "..manufacturer.."_get_imei "..at_port
-	local result=shell(command1)
-	local result_json = {}
-	result_json["imei"] = result
-	luci.http.prepare_content("application/json")
-	luci.http.write_json(result_json)
-end
-
---[[
-@Description 获取自检信息
-]]
-function getSelfTestInfo()
-	local at_port = http.formvalue("port")
-	
-	--获取制造商
-	local manufacturer=getManufacturer(at_port)
-
-	--获取值
-	local self_test_info={}
-	if manufacturer~="unknown" then
-		--获取模组电压
-		local command="source "..script_path..manufacturer..".sh && "..manufacturer.."_get_voltage "..at_port
-		local result=shell(command)
-		self_test_info["voltage"]=json.parse(result)
-
-		--获取模组温度
-		command="source "..script_path..manufacturer..".sh && "..manufacturer.."_get_temperature "..at_port
-		result=shell(command)
-		self_test_info["temperature"]=json.parse(result)
-	end
-
-	--设置值
-	local modem_debug_info={}
-	modem_debug_info["self_test_info"]=self_test_info
-	
-	-- 写入Web界面
-	luci.http.prepare_content("application/json")
-	luci.http.write_json(modem_debug_info)
-end
-
---[[
-@Description 获取快捷命令
-]]
-function getQuickCommands()
-
-	--获取快捷命令选项
-	local quick_option = http.formvalue("option")
-	--获取AT串口
-	local at_port = http.formvalue("port")
-
-	local manufacturer
-	local platform
-	uci:foreach("modem", "modem-device", function (modem_device)
-		if at_port == modem_device["at_port"] then
-			--获取制造商
-			manufacturer=modem_device["manufacturer"]
-			--获取平台
-			platform=modem_device["platform"]
-			return true --跳出循环
-		end
-	end)
-
-	--未适配模组时，快捷命令选项为自定义
-	if manufacturer=="unknown" or manufacturer=="unknown" then
-		quick_option="custom"
-	end
-
-	local quick_commands={}
-	local commands={}
-	if quick_option=="auto" then
-
-		--获取通用模组AT命令
-		local command="jq '.quick_commands.general' \""..script_path.."at_commands.json\""
-		local result=shell(command)
-		local general_commands=json.parse(result)
-
-		--获取特殊模组AT命令
-		command="jq '.quick_commands."..manufacturer.."."..platform.."' \""..script_path.."at_commands.json\""
-		result=shell(command)
-		local special_commands=json.parse(result)
-
-		--把通用命令和特殊命令整合到一起
-		for i = 1, #special_commands do
-			local special_command = special_commands[i]
-			table.insert(general_commands,special_command)
-		end
-
-		quick_commands["quick_commands"]=general_commands
-	else
-		uci:foreach("custom_at_commands", "custom-commands", function (custom_commands)
-			local command={}
-			command[custom_commands["description"]]=custom_commands["command"]
-			table.insert(commands,command)
-		end)
-		quick_commands["quick_commands"]=commands
-	end
-
-	-- 写入Web界面
-	luci.http.prepare_content("application/json")
-	luci.http.write_json(quick_commands)
-end
 
 --[[
 @Description 发送AT命令
@@ -850,36 +497,6 @@ function sendATCommand()
 end
 
 --[[
-@Description 获取模组调试信息
-]]
--- function getModemDebugInfo()
--- 	local at_port = http.formvalue("port")
-	
--- 	--获取制造商
--- 	local manufacturer=getManufacturer(at_port)
-
--- 	--获取值
--- 	local mode_info={}
--- 	local network_prefer_info={}
--- 	local self_test_info={}
--- 	if manufacturer~="unknown" then
--- 		mode_info=getModeInfo(at_port,manufacturer)
--- 		network_prefer_info=getNetworkPreferInfo(at_port,manufacturer)
--- 		self_test_info=getSelfTestInfo(at_port,manufacturer)
--- 	end
-
---	-- 设置值
--- 	local modem_debug_info={}
--- 	modem_debug_info["mode_info"]=mode_info
--- 	modem_debug_info["network_prefer_info"]=network_prefer_info
--- 	modem_debug_info["self_test_info"]=self_test_info
-
--- 	-- 写入Web界面
--- 	luci.http.prepare_content("application/json")
--- 	luci.http.write_json(modem_debug_info)
--- end
-
---[[
 @Description 模组扫描
 ]]
 function modemScan()
@@ -892,127 +509,13 @@ function modemScan()
 	luci.http.write_json(result)
 end
 
---[[
-@Description 设置插件版本信息
-@Params
-	info 信息
-]]
-function setPluginVersionInfo(info)
 
-	-- 正则表达式
-	local version_regular_expression="[0-9]+.[0-9]+.[0-9]+"
-
-	for key in pairs(info) do
-
-		-- 获取插件版本
-		local command="opkg list-installed | grep -oE '"..key.." - "..version_regular_expression.."' | awk -F' ' '{print $3}' | tr -d '\n'"
-		local plugin_version=shell(command)
-
-		if plugin_version~="" then
-			info[key]=plugin_version
-		end
-	end
-
-end
-
---[[
-@Description 获取内核模块状态
-@Params
-	result 命令返回值
-]]
-function getModelStatus(result)
-	local model_status="Not loaded"
-
-	if result~="" then
-		model_status="Loaded"
-    end
-
-	return model_status
-end
-
---[[
-@Description 设置内核模块状态
-@Params
-	info 信息
-]]
-function setModelStatus(info)
-
-	for key in pairs(info) do
-
-		-- 获取内核模块名
-		local model_name=key:gsub(".ko","")
-
-		local command="lsmod | grep -oE '"..model_name.." '"
-		local result=shell(command)
-		local model_status=getModelStatus(result)
-
-		-- 修改信息表
-		info[key]=model_status
-	end
-
-end
-
---[[
-@Description 获取插件信息
-]]
-function getPluginInfo()
-
-	-- 设置翻译
-	translation={}
-	translation["Unknown"]=luci.i18n.translate("Unknown")
-	translation["Not installed"]=luci.i18n.translate("Not installed")
-	translation["Loaded"]=luci.i18n.translate("Loaded")
-	translation["Not loaded"]=luci.i18n.translate("Not loaded")
-
-	-- 获取插件信息
-	local plugin_info={}
-	plugin_info["luci-app-modem"]="Unknown"
-	setPluginVersionInfo(plugin_info)
-
-	-- 获取拨号工具信息
-	local dial_tool_info={}
-	dial_tool_info["quectel-CM-5G"]="Not installed"
-	dial_tool_info["modemmanager"]="Not installed"
-	setPluginVersionInfo(dial_tool_info)
-
-	-- 获取通用驱动信息
-	local general_driver_info={}
-	general_driver_info["usbnet.ko"]="Not loaded"
-	general_driver_info["option.ko"]="Not loaded"
-	-- general_driver_info["qcserial.ko"]="Not loaded"
-	setModelStatus(general_driver_info)
-
-	-- 获取模组USB驱动信息
-	local usb_driver_info={}
-	usb_driver_info["qmi_wwan.ko"]="Not loaded"
-	usb_driver_info["GobiNet.ko"]="Not loaded"
-	usb_driver_info["cdc_ether.ko"]="Not loaded"
-	usb_driver_info["cdc_mbim.ko"]="Not loaded"
-	usb_driver_info["rndis_host.ko"]="Not loaded"
-	usb_driver_info["cdc_ncm.ko"]="Not loaded"
-	setModelStatus(usb_driver_info)
-
-	-- 获取模组PCIE驱动信息
-	local pcie_driver_info={}
-	pcie_driver_info["mhi_net.ko"]="Not loaded"
-	pcie_driver_info["qrtr_mhi.ko"]="Not loaded"
-	pcie_driver_info["mhi_pci_generic.ko"]="Not loaded"
-	pcie_driver_info["mhi_wwan_mbim.ko"]="Not loaded"
-	pcie_driver_info["mhi_wwan_ctrl.ko"]="Not loaded"
-	pcie_driver_info["pcie_mhi.ko"]="Not loaded"
-	pcie_driver_info["mtk_pcie_wwan_m80.ko"]="Not loaded"
-	setModelStatus(pcie_driver_info)
-
-	-- 设置值
-	local data={}
-	data["translation"]=translation
-	data["plugin_info"]=plugin_info
-	data["dial_tool_info"]=dial_tool_info
-	data["general_driver_info"]=general_driver_info
-	data["usb_driver_info"]=usb_driver_info
-	data["pcie_driver_info"]=pcie_driver_info
-
-	-- 写入Web界面
+function reloadDial()
+	local command="/etc/init.d/network reload"
+	shell(command)
+	local response={}
+	response["response"]="reload dial"
+	response["time"]=os.date("%Y-%m-%d %H:%M:%S")
 	luci.http.prepare_content("application/json")
-	luci.http.write_json(data)
+	luci.http.write_json(response)
 end

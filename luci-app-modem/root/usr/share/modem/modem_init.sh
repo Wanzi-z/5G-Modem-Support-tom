@@ -13,7 +13,19 @@ modem_init()
     local modem_count=$(uci -q get modem.@global[0].modem_number)
     for i in $(seq 0 $((modem_count-1))); do
         #删除该模组的配置
-        uci -q del modem.modem${i}
+        uci batch <<EOF
+del modem.modem${i}.data_interface
+del modem.modem${i}.path
+del modem.modem${i}.network
+del modem.modem${i}.network_interface
+del modem.modem${i}.ports
+del modem.modem${i}.at_port
+del modem.modem${i}.name
+del modem.modem${i}.manufacturer
+del modem.modem${i}.define_connect
+del modem.modem${i}.platform
+del modem.modem${i}.modes
+EOF
     done
     uci set modem.@global[0].modem_number=0
     uci commit modem

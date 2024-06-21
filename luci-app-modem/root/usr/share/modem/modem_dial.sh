@@ -47,7 +47,7 @@ get_driver()
 config_load modem
 modem_config=$1
 log_path="${MODEM_RUNDIR}/${modem_config}_dial.cache"
-config_get apn $modem_config apn
+config_get enable_dial $modem_config enable_dial
 config_get modem_path $modem_config path
 config_get modem_dial $modem_config enable_dial
 config_get dial_tool $modem_config dial_tool
@@ -60,6 +60,12 @@ config_get auth $modem_config auth
 config_get at_port $modem_config at_port
 config_get manufacturer $modem_config manufacturer
 config_get platform $modem_config platform
+config_get define_connect $modem_config define_connect
+global_dial=$(uci -q get modem.@global[0].enable_dial)
+[ "$2" == "hang" ] && enable_dial=0
+if [ "$global_dial" == 0 ];then
+    enable_dial=0
+fi
 modem_netcard=$(ls $(find $modem_path -name net |tail -1) | awk -F'/' '{print $NF}')
 interface_name=wwan_5g_$(echo $modem_config | grep -oE "[0-9]+")
 interface6_name=wwan6_5g_$(echo $modem_config | grep -oE "[0-9]+")
@@ -79,11 +85,13 @@ check_ip()
                         check_ip_command="AT+CGPADDR=1"
                         ;;
                     "lte")
-                        check_ip_command="AT+CGPADDR=1"
+                        if [ "$define_connect" = "3" ];then
+                            check_ip_command="AT+CGPADDR=3"
+                        else
+                            check_ip_command="AT+CGPADDR=1"
+                        fi
                         ;;
-                    "lte_mediatek")
-                        check_ip_command="AT+CGPADDR=3"
-                        ;;
+                    
                 esac
                 ;;
             "fibocom")
@@ -99,6 +107,7 @@ check_ip()
                         ;;
                     "mediatek")
                         check_ip_command="AT+CGPADDR=3"
+                        stric=1
                         ;;
                 esac
                 ;;
@@ -139,28 +148,37 @@ set_if()
         uci set network.${interface_name}.defaultroute='1'
         uci set network.${interface_name}.peerdns='0'
         uci set network.${interface_name}.metric='10'
-        
-
-        #添加或修改网络配置
-        uci set network.${interface6_name}='interface'
-        uci set network.${interface6_name}.proto='dhcpv6'
-        uci set network.${interface6_name}.extendprefix='1'
-        uci set network.${interface6_name}.ifname="@${interface_name}"
-        uci set network.${interface6_name}.device="@${interface_name}"
-        uci commit network
-
-
+        uci add_list network.${interface_name}.dns='114.114.114.114'
+        uci add_list network.${interface_name}.dns='119.29.29.29'
         local num=$(uci show firewall | grep "name='wan'" | wc -l)
         local wwan_num=$(uci -q get firewall.@zone[$num].network | grep -w "${interface_name}" | wc -l)
         if [ "$wwan_num" = "0" ]; then
             uci add_list firewall.@zone[$num].network="${interface_name}"
         fi
-        local wwan6_num=$(uci -q get firewall.@zone[$num].network | grep -w "${interface6_name}" | wc -l)
-        if [ "$wwan6_num" = "0" ]; then
-            uci add_list firewall.@zone[$num].network="${interface6_name}"
+
+        #set ipv6
+        #if pdptype contain 6
+        if [ -n "$(echo $pdp_type | grep "6")" ];then
+            uci set network.lan.ipv6='1'
+            uci set network.lan.ip6assign='64'
+            uci set network.lan.ip6class="${interface6_name}"
+            uci set network.${interface6_name}='interface'
+            uci set network.${interface6_name}.proto='dhcpv6'
+            uci set network.${interface6_name}.extendprefix='1'
+            uci set network.${interface6_name}.ifname="@${interface_name}"
+            uci set network.${interface6_name}.device="@${interface_name}"
+            uci set network.${interface6_name}.metric='10'
+            local wwan6_num=$(uci -q get firewall.@zone[$num].network | grep -w "${interface6_name}" | wc -l)
+            if [ "$wwan6_num" = "0" ]; then
+                uci add_list firewall.@zone[$num].network="${interface6_name}"
+            fi
         fi
+
+
+        
         uci commit network
         uci commit firewall
+        ifup ${interface_name}
         dial_log "create interface $interface_name" "$log_path"
 
     fi
@@ -173,6 +191,9 @@ set_if()
     if [ -n "$ethernet_check" ];then
         set_modem_netcard=$ethernet_5g
     fi
+    #set led
+    uci set system.led_wwan.dev="${set_modem_netcard}"
+    uci commit system
     origin_netcard=$(uci -q get network.$interface_name.ifname)
     origin_device=$(uci -q get network.$interface_name.device)
     if [ "$origin_netcard" == "$set_modem_netcard" ] && [ "$origin_device" == "$set_modem_netcard" ];then
@@ -182,7 +203,7 @@ set_if()
         uci set network.${interface_name}.device="${set_modem_netcard}"
         
         uci commit network
-        /etc/init.d/network restart
+        ifup ${interface_name}
         dial_log "set interface $interface_name to $modem_netcard" "$log_path"
     fi
 }
@@ -192,7 +213,6 @@ flush_if()
     uci delete network.${interface_name}
     uci delete network.${interface6_name}
     uci commit network
-    /etc/init.d/network restart
     dial_log "delete interface $interface_name" "$log_path"
 
 }
@@ -222,7 +242,14 @@ dial(){
     esac
 }
 
-hang()
+wwan_hang()
+{
+    #kill quectel-CM
+    killall quectel-CM
+}
+
+
+ecm_hang()
 {
     if [ "$manufacturer" = "quectel" ]; then
 		at_command="AT+QNETDEVCTL=1,2,1"
@@ -240,7 +267,37 @@ hang()
 	fi
 
 	tmp=$(at "${at_port}" "${at_command}")
+}
+
+fake_run()
+{
+    while true; do
+        sleep 5
+    done
+}
+
+hang()
+{
+    logger -t modem "hang up $modem_path driver $driver"
+    case $driver in
+        "ncm")
+            ecm_hang
+            ;;
+        "ecm")
+            ecm_hang
+            ;;
+        "rndis")
+            ecm_hang
+            ;;
+        "qmi")
+            wwan_hang
+            ;;
+        "mbim")
+            wwan_hang
+            ;;
+    esac
     flush_if
+    #fake_run
 }
 
 mbim_dial(){
@@ -257,7 +314,7 @@ qmi_dial()
     cmd_line="quectel-CM"
 
 	case $pdp_type in
-		"ipv4") cmd_line="$cmd_line -4" ;;
+		"ip") cmd_line="$cmd_line -4" ;;
 		"ipv6") cmd_line="$cmd_line -6" ;;
 		"ipv4v6") cmd_line="$cmd_line -4 -6" ;;
 		*) cmd_line="$cmd_line -4 -6" ;;
@@ -281,7 +338,7 @@ qmi_dial()
 	if [ -n "$modem_netcard" ]; then
 		cmd_line="$cmd_line -i $modem_netcard"
 	fi
-    dial_log "dialing $cmd_line" "$log_path"
+    
     cmd_line="$cmd_line -f $log_path"
     $cmd_line
     
@@ -290,11 +347,14 @@ qmi_dial()
 
 at_dial()
 {
+
+    apn=$(uci -q get modem.$modem_config.apn)
+    pdp_type=$(uci -q get modem.$modem_config.pdp_type)
     if [ -z "$apn" ];then
         apn="auto"
     fi
     if [ -z "$pdp_type" ];then
-        pdp_type="IPV4V6"
+        pdp_type="IP"
     fi
     local at_command='AT+COPS=0,0'
 	tmp=$(at "${at_port}" "${at_command}")
@@ -311,8 +371,13 @@ at_dial()
                     cgdcont_command="AT+CGDCONT=1,\"$pdp_type\",\"$apn\""
                     ;;
                 "lte")
-                    at_command="AT+QNETDEVCTL=1,3,1"
-                    cgdcont_command="AT+CGDCONT=1,\"$pdp_type\",\"$apn\""
+                    if [ "$define_connect" = "3" ];then
+                        at_command="AT+QNETDEVCTL=3,3,1"
+                        cgdcont_command="AT+CGDCONT=3,\"$pdp_type\",\"$apn\""
+                    else
+                        at_command="AT+QNETDEVCTL=1,3,1"
+                        cgdcont_command="AT+CGDCONT=1,\"$pdp_type\",\"$apn\""
+                    fi
                     ;;
                 *)
                     at_command="AT+QNETDEVCTL=1,3,1"
@@ -342,8 +407,7 @@ at_dial()
             ;;
             
     esac
-    dial_log "dialing vendor:$manufacturer;platform:$platform; $cgdcont_command" "$log_path"
-    dial_log "dialing vendor:$manufacturer;platform:$platform; $at_command" "$log_path"
+    dial_log "dialing vendor:$manufacturer;platform:$platform; $cgdcont_command ; $at_command" "$log_path"
     at "${at_port}" "${cgdcont_command}"
     at "$at_port" "$at_command"
 }
@@ -352,7 +416,7 @@ ip_change_fm350()
 {
     dial_log "ip_change_fm350" "$log_path"
     at_command="AT+CGPADDR=3"
-    local ipv4_config=$(at ${at_port} ${at_command} | grep "+CGPADDR: " | awk -F',' '{print $2}' | sed 's/"//g')
+    local ipv4_config=$(at ${at_port} ${at_command} | cut -d, -f2 | grep -oE '[0-9]+.[0-9]+.[0-9]+.[0-9]+')
     local public_dns1_ipv4="223.5.5.5"
     local public_dns2_ipv4="119.29.29.29"
     local public_dns1_ipv6="2400:3200::1"
@@ -388,7 +452,8 @@ ip_change_fm350()
     uci add_list network.${interface_name}.dns="${ipv4_dns1}"
     uci add_list network.${interface_name}.dns="${ipv4_dns2}"
     uci commit network
-    /etc/init.d/network restart
+    ifdown ${interface_name}
+    ifup ${interface_name}
     dial_log "set interface $interface_name to $ipv4_config" "$log_path"
 
 }
@@ -443,7 +508,16 @@ handle_ip_change()
     esac
 }
 
+check_logfile_line()
+{
+    local line=$(wc -l $log_path | awk '{print $1}')
+    if [ $line -gt 300 ];then
+        echo "" > $log_path
+        dial_log "log file line is over 300,clear it" "$log_path"
+    fi
+}
 
+unexpected_response_count=0
 at_dial_monitor()
 {
     check_ip
@@ -453,22 +527,31 @@ at_dial_monitor()
         check_ip
         if [ $connection_status -eq 0 ];then
             at_dial
+            sleep 5
+        elif [ $connection_status -eq -1 ];then
+            unexpected_response_count=$((unexpected_response_count+1))
+            if [ $unexpected_response_count -gt 3 ];then
+                at_dial
+                unexpected_response_count=0
+            fi
+            sleep 10
         else
         #检测ipv4是否变化
+            sleep 15
             if [ "$ipv4" != "$ipv4_cache" ];then
                 handle_ip_change
                 ipv6_cache=$ipv6
                 ipv4_cache=$ipv4
             fi
         fi
-    sleep 5
+        check_logfile_line
     done
     
 }
 
-case $2 in
-    "hang")
+case "$enable_dial" in
+    "0")
         hang;;
-    "dial")
+    "1")
         dial;;
 esac

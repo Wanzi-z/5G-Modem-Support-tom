@@ -14,7 +14,7 @@ s:tab("advanced", translate("Advanced Settings"))
 --------general--------
 
 -- 是否启用
-enable = s:taboption("general", Flag, "enable", translate("Enable"))
+enable = s:taboption("general", Flag, "enable_dial", translate("enable_dial"))
 enable.default = "0"
 enable.rmempty = false
 
@@ -89,7 +89,7 @@ dial_tool:value("mmcli", translate("mmcli"))
 pdp_type= s:taboption("advanced", ListValue, "pdp_type", translate("PDP Type"))
 pdp_type.default = "ipv4v6"
 pdp_type.rmempty = false
-pdp_type:value("ipv4", translate("IPv4"))
+pdp_type:value("ip", translate("IPv4"))
 pdp_type:value("ipv6", translate("IPv6"))
 pdp_type:value("ipv4v6", translate("IPv4/IPv6"))
 

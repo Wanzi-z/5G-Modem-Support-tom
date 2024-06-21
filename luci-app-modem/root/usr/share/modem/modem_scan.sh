@@ -38,7 +38,7 @@ set_modem_config()
     m_set_physical_device "scan" "${network}" "${device_physical_path}"
 
     #启用拨号
-    enable_dial "${network}"
+    # enable_dial "${network}"
 }
 
 #设置系统网络设备
